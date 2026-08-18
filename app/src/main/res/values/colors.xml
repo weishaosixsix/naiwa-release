@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 取自图标木框的主色，自适应图标裁切后露出的边与木框同色 -->
+    <color name="icon_background">#AD7E54</color>
+</resources>

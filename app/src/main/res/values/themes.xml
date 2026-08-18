@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Xuebi" parent="android:Theme.Material.NoActionBar">
+        <!-- 与 Compose surface 同色，避免顶栏和状态栏出现色差断层 -->
+        <item name="android:statusBarColor">#1E1E1E</item>
+        <item name="android:navigationBarColor">#1E1E1E</item>
+        <item name="android:windowBackground">#121212</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

@@ -1,0 +1,30 @@
+*.iml
+.gradle/
+.kotlin/
+.rollback/
+local.properties
+.idea/
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.jks
+*.keystore
+*.rar
+*.zip
+
+# 游戏客户端文件不入库：版权归原开发商，需自行从官方客户端提取。
+# SDK 模拟层经原作者授权保留。
+app/src/main/assets/renderer/*
+!app/src/main/assets/renderer/hsdk-mock.js
+!app/src/main/assets/renderer/patch.js
+!app/src/main/assets/renderer/cocos-bundle-patch.js
+!app/src/main/assets/renderer/naiwa-uifix.css
+!app/src/main/assets/renderer/index.html
+!app/src/main/assets/renderer/README.md
+
+# 社区脚本不入库，版权归各自作者
+app/src/main/assets/scripts/*
+!app/src/main/assets/scripts/README.md

@@ -1,0 +1,400 @@
+package com.sharkking.assistant.data
+
+import android.content.Context
+import android.util.Log
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import org.json.JSONArray
+
+/**
+ * 全局状态与持久化，对应 iOS 版的 Store.swift（那边用 NSUserDefaults，
+ * 这里用 SharedPreferences）。
+ *
+ * 模型字段全部不可变，任何修改都通过 copy() 替换列表中对应项来完成，
+ * 这样 Compose 才能收到重组通知。
+ */
+class AppStore(private val ctx: Context) {
+
+    companion object {
+        private const val TAG = "奶蛙-Store"
+        private const val PREF = "xuebi_store"
+        private const val K_ACCOUNTS = "accounts"
+        private const val K_GROUPS = "groups"
+        private const val K_SCRIPTS = "scripts"
+        private const val K_MAX_WIN = "max_windows"
+        private const val K_PURGED_BUILTIN = "purged_builtin"
+        // 版本号递增可让已安装的用户收到新增的预置脚本
+        // 存的是包内脚本清单的指纹，清单一变就重新同步
+        private const val K_PRESET_DONE = "preset_stamp"
+        private const val K_TAB_MODE = "tab_mode"
+        private const val K_DARK = "dark_theme"
+        const val WINDOW_LIMIT = 6
+
+        /**
+         * v3 之前存下的脚本没有 preset 标记。这些名字是历史版本内置过的，
+         * 用于在升级时识别并清理，避免残留。
+         */
+        private val LEGACY_PRESET_NAMES = setOf(
+            "00-省电模式修复.js",
+            "世界循环发消息.js",
+            "十殿加速.js",
+            "好友备注.js",
+            "属性展示增强.js",
+            "查看白玉彩玉使用记录.js",
+            "洗炼加速.js",
+            "洗炼跳过红色.js",
+            "盐场无限视距.js",
+            "盐场阵容显示.js",
+            "自动蟠桃protected.js",
+        )
+    }
+
+    private val prefs = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+
+    val accounts = mutableStateListOf<AccountItem>()
+    val groups = mutableStateListOf<AccountGroup>()
+    val scripts = mutableStateListOf<UserScript>()
+    val windows = mutableStateListOf<GameWindow>()
+
+    val maxWindows = mutableStateOf(2)
+    val syncEnabled = mutableStateOf(false)
+
+    /** 脚本启用状态的变更计数，游戏窗口据此重新注入，无需重开 */
+    val scriptsRevision = mutableStateOf(0)
+
+    /** true = 标签模式（一次显示一个，其余后台常驻）；false = 一屏多窗口 */
+    val tabMode = mutableStateOf(false)
+
+    /** 标签模式下当前激活的窗口 id */
+    val activeWindowId = mutableStateOf<String?>(null)
+
+    /**
+     * true = 深夜模式，false = 白天模式。默认深夜，与原先写死的深色一致。
+     *
+     * 只影响软件外壳（列表页、顶栏、弹窗）。游戏本体是 WebView 里的
+     * canvas 自绘，配色管不到它。
+     */
+    val darkTheme = mutableStateOf(true)
+
+    fun setDarkTheme(on: Boolean) {
+        darkTheme.value = on
+        prefs.edit().putBoolean(K_DARK, on).apply()
+    }
+
+    fun setTabMode(on: Boolean) {
+        tabMode.value = on
+        // 标签模式下同步器影响的是看不见的后台账号，切换时一律先关掉
+        if (on) syncEnabled.value = false
+        if (on && activeWindowId.value == null) {
+            activeWindowId.value = windows.firstOrNull()?.id
+        }
+        prefs.edit().putBoolean(K_TAB_MODE, on).apply()
+    }
+
+    init {
+        load()
+        ensureDefaultGroup()
+        purgeBuiltinAccount()
+        // 用包内脚本清单的指纹判断要不要同步，而不是一次性布尔标志。
+        // 之前用布尔值，升级后新增的脚本（自动蟠桃、盐场无限视距）
+        // 会因为标志已是 true 而被整段跳过，永远进不来。
+        val stamp = PresetScripts.assetStamp(ctx)
+        if (prefs.getString(K_PRESET_DONE, null) != stamp) {
+            PresetScripts.syncInto(ctx, this)
+            prefs.edit().putString(K_PRESET_DONE, stamp).apply()
+        }
+    }
+
+    /** 预置脚本导入，指定初始启用状态 */
+    fun addPresetScript(name: String, code: String, enabled: Boolean, locked: Boolean = false) {
+        scripts.add(
+            UserScript(
+                name = name,
+                code = code,
+                // 常驻脚本必须启用，不给关
+                enabled = enabled || locked,
+                order = (scripts.maxOfOrNull { it.order } ?: 0) + 1,
+                locked = locked,
+                preset = true,
+            )
+        )
+        save()
+    }
+
+    /** 升级时替换预置脚本的代码，保留用户的开关选择 */
+    fun updatePresetScript(id: String, code: String, locked: Boolean) {
+        val i = scripts.indexOfFirst { it.id == id }
+        if (i < 0) return
+        val old = scripts[i]
+        if (old.code == code && old.locked == locked && old.preset) return
+        scripts[i] = old.copy(
+            code = code,
+            locked = locked,
+            enabled = old.enabled || locked,
+            preset = true,
+        )
+        save()
+        scriptsRevision.value++
+    }
+
+    /**
+     * 清掉新包已不再内置的预置脚本。
+     *
+     * 只删 preset=true 的项。历史版本存的脚本没有这个标记，靠名字兜底
+     * 识别，避免把用户自己导入的同名脚本连带删掉。
+     */
+    fun removeStalePresets(keepNames: Set<String>): Int {
+        val stale = scripts.filter { s ->
+            s.name !in keepNames && (s.preset || s.name in LEGACY_PRESET_NAMES)
+        }
+        if (stale.isEmpty()) return 0
+        scripts.removeAll(stale)
+        save()
+        scriptsRevision.value++
+        return stale.size
+    }
+
+    // ---------- 读写 ----------
+
+    private fun load() {
+        runCatching {
+            prefs.getString(K_GROUPS, null)?.let {
+                groups.addAll(JSONArray(it).map(AccountGroup::fromJson))
+            }
+            prefs.getString(K_ACCOUNTS, null)?.let {
+                accounts.addAll(JSONArray(it).map(AccountItem::fromJson))
+            }
+            prefs.getString(K_SCRIPTS, null)?.let {
+                scripts.addAll(JSONArray(it).map(UserScript::fromJson))
+            }
+            maxWindows.value = prefs.getInt(K_MAX_WIN, 2)
+            tabMode.value = prefs.getBoolean(K_TAB_MODE, false)
+            darkTheme.value = prefs.getBoolean(K_DARK, true)
+        }.onFailure { Log.w(TAG, "读取失败: ${it.message}") }
+    }
+
+    fun save() {
+        prefs.edit()
+            .putString(K_GROUPS, JSONArray(groups.map { it.toJson() }).toString())
+            .putString(K_ACCOUNTS, JSONArray(accounts.map { it.toJson() }).toString())
+            .putString(K_SCRIPTS, JSONArray(scripts.map { it.toJson() }).toString())
+            .putInt(K_MAX_WIN, maxWindows.value)
+            .apply()
+    }
+
+    private fun ensureDefaultGroup() {
+        if (groups.none { it.id == AccountGroup.DEFAULT_ID }) {
+            groups.add(
+                0,
+                AccountGroup(
+                    id = AccountGroup.DEFAULT_ID,
+                    name = "未分组",
+                    colorArgb = AccountGroup.PALETTE[6].first,
+                    order = 0,
+                )
+            )
+            save()
+        }
+    }
+
+    /**
+     * 早期版本会把 assets 里的 bin 作为内置账号写进本地存储。
+     * 现已改为完全由用户导入，这里做一次性清理，避免升级后残留。
+     */
+    private fun purgeBuiltinAccount() {
+        if (prefs.getBoolean(K_PURGED_BUILTIN, false)) return
+        val builtins = accounts.filter { it.builtin }
+        if (builtins.isNotEmpty()) {
+            val ids = builtins.map { it.id }.toSet()
+            accounts.removeAll { it.builtin }
+            windows.removeAll { it.accountId in ids }
+            save()
+            Log.i(TAG, "已清理内置账号 ${builtins.size} 个")
+        }
+        prefs.edit().putBoolean(K_PURGED_BUILTIN, true).apply()
+    }
+
+    // ---------- 账号 ----------
+
+    fun addAccount(name: String, bytes: ByteArray): AccountItem {
+        val item = AccountItem(
+            name = name,
+            binHex = bytes.toHex(),
+            order = (accounts.maxOfOrNull { it.order } ?: 0) + 1,
+        )
+        accounts.add(item)
+        save()
+        return item
+    }
+
+    fun removeAccount(id: String) {
+        accounts.removeAll { it.id == id }
+        windows.removeAll { it.accountId == id }
+        save()
+    }
+
+    fun renameAccount(id: String, newName: String) {
+        updateAccount(id) { it.copy(name = newName) }
+    }
+
+    /** 主要账号固定在列表顶部，同一时间只有一个 */
+    fun setPrimary(id: String) {
+        for (i in accounts.indices) {
+            val want = accounts[i].id == id
+            if (accounts[i].isPrimary != want) {
+                accounts[i] = accounts[i].copy(isPrimary = want)
+            }
+        }
+        save()
+    }
+
+    fun clearPrimary(id: String) {
+        updateAccount(id) { it.copy(isPrimary = false) }
+    }
+
+    fun moveToGroup(accountId: String, groupId: String) {
+        updateAccount(accountId) { it.copy(groupId = groupId) }
+    }
+
+    fun reorderAccount(from: Int, to: Int) {
+        if (from !in accounts.indices || to !in accounts.indices) return
+        val item = accounts.removeAt(from)
+        accounts.add(to, item)
+        for (i in accounts.indices) {
+            if (accounts[i].order != i) accounts[i] = accounts[i].copy(order = i)
+        }
+        save()
+    }
+
+    /** 排序：主要账号置顶，其余按 order */
+    fun accountsInGroup(groupId: String): List<AccountItem> =
+        accounts.filter { it.groupId == groupId }
+            .sortedWith(compareByDescending<AccountItem> { it.isPrimary }.thenBy { it.order })
+
+    private inline fun updateAccount(id: String, block: (AccountItem) -> AccountItem) {
+        val i = accounts.indexOfFirst { it.id == id }
+        if (i < 0) return
+        accounts[i] = block(accounts[i])
+        save()
+    }
+
+    // ---------- 分组 ----------
+
+    fun addGroup(name: String, color: Int): AccountGroup {
+        val g = AccountGroup(
+            name = name, colorArgb = color,
+            order = (groups.maxOfOrNull { it.order } ?: 0) + 1,
+        )
+        groups.add(g)
+        save()
+        return g
+    }
+
+    fun renameGroup(id: String, newName: String) {
+        updateGroup(id) { it.copy(name = newName) }
+    }
+
+    fun setGroupColor(id: String, color: Int) {
+        updateGroup(id) { it.copy(colorArgb = color) }
+    }
+
+    fun removeGroup(id: String) {
+        if (id == AccountGroup.DEFAULT_ID) return
+        for (i in accounts.indices) {
+            if (accounts[i].groupId == id) {
+                accounts[i] = accounts[i].copy(groupId = AccountGroup.DEFAULT_ID)
+            }
+        }
+        groups.removeAll { it.id == id }
+        save()
+    }
+
+    private inline fun updateGroup(id: String, block: (AccountGroup) -> AccountGroup) {
+        val i = groups.indexOfFirst { it.id == id }
+        if (i < 0) return
+        groups[i] = block(groups[i])
+        save()
+    }
+
+    // ---------- 脚本 ----------
+
+    fun addScript(name: String, code: String): UserScript {
+        val s = UserScript(
+            name = name, code = code,
+            order = (scripts.maxOfOrNull { it.order } ?: 0) + 1,
+        )
+        scripts.add(s)
+        save()
+        scriptsRevision.value++
+        return s
+    }
+
+    fun toggleScript(id: String, enabled: Boolean) {
+        val i = scripts.indexOfFirst { it.id == id }
+        if (i < 0) return
+        if (scripts[i].locked) return
+        scripts[i] = scripts[i].copy(enabled = enabled)
+        save()
+        scriptsRevision.value++
+    }
+
+    fun removeScript(id: String) {
+        if (scripts.firstOrNull { it.id == id }?.locked == true) return
+        scripts.removeAll { it.id == id }
+        save()
+        scriptsRevision.value++
+    }
+
+    /**
+     * 已启用脚本列表，元素为 (id, 显示名, 代码)。
+     * 按脚本粒度返回，便于注入侧逐个记录状态、避免重复执行。
+     */
+    fun enabledScripts(): List<Triple<String, String, String>> =
+        scripts.filter { it.enabled }.sortedBy { it.order }
+            .map { Triple(it.id, it.displayName, it.code) }
+
+    // ---------- 窗口 ----------
+
+    fun openWindow(account: AccountItem): GameWindow? {
+        if (windows.size >= maxWindows.value) return null
+        val w = GameWindow(
+            accountId = account.id,
+            title = account.displayName,
+            isSyncMaster = windows.isEmpty(),
+        )
+        windows.add(w)
+        // 新开的窗口直接成为标签模式下的当前项
+        activeWindowId.value = w.id
+        return w
+    }
+
+    fun closeWindow(id: String) {
+        val idx = windows.indexOfFirst { it.id == id }
+        val wasMaster = windows.getOrNull(idx)?.isSyncMaster == true
+        windows.removeAll { it.id == id }
+        if (wasMaster && windows.isNotEmpty()) {
+            windows[0] = windows[0].copy(isSyncMaster = true)
+        }
+        // 关掉的正是当前标签时，落到相邻一项
+        if (activeWindowId.value == id) {
+            activeWindowId.value = windows.getOrNull(idx.coerceAtMost(windows.lastIndex))?.id
+        }
+    }
+
+    /** 标签模式下的当前窗口，越界或未设置时回退到第一个 */
+    fun currentWindow(): GameWindow? =
+        windows.find { it.id == activeWindowId.value } ?: windows.firstOrNull()
+
+    fun accountOf(w: GameWindow): AccountItem? = accounts.find { it.id == w.accountId }
+}
+
+fun ByteArray.toHex(): String {
+    val hex = CharArray(size * 2)
+    val digits = "0123456789abcdef"
+    forEachIndexed { i, b ->
+        val v = b.toInt() and 0xFF
+        hex[i * 2] = digits[v ushr 4]
+        hex[i * 2 + 1] = digits[v and 0x0F]
+    }
+    return String(hex)
+}
