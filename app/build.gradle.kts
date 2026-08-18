@@ -12,8 +12,8 @@ android {
         applicationId = "com.sharkking.assistant"
         minSdk = 24
         targetSdk = 34
-        versionCode = 98
-        versionName = "1.0.98"
+        versionCode = 99
+        versionName = "1.0.99"
 
         // 更新检查指向的仓库，改仓库只需改这里
         buildConfigField("String", "UPDATE_REPO", "\"gterryd/naiwa-release\"")
