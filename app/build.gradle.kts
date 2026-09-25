@@ -23,7 +23,7 @@ val hasReleaseSigning = !releaseStorePath.isNullOrBlank() && file(releaseStorePa
 //   3. GitHub release 的 tag 写 "v" + 版本名（如 v1.1.1）—— 更新检查是从
 //      tag 里取数字和本机的 versionName 比：tag 没抬则所有用户永远收不到
 //      提示；tag 抬了而 APK 版本没抬则用户被反复提示、装完却还是旧版。
-val appVersionName = "1.1.1"
+val appVersionName = "1.2.0"
 
 android {
     namespace = "com.sharkking.assistant"
@@ -37,7 +37,7 @@ android {
         applicationId = "com.huluwang.assistant"
         minSdk = 24
         targetSdk = 34
-        versionCode = 101
+        versionCode = 102
         versionName = appVersionName
 
         // 更新检查指向的仓库。必须是自己发 release 的仓库：

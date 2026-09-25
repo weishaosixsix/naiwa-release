@@ -355,13 +355,40 @@ class AppStore(private val ctx: Context) {
         return s
     }
 
-    fun toggleScript(id: String, enabled: Boolean) {
+    /**
+     * 互斥脚本组:同组同时只能开启一个,开启一个时自动关闭同组其他。
+     * 蟠桃园自动化脚本会发同样的上船请求,同时开两个会互相抢。
+     * 按 displayName(文件名去掉 .js)匹配,用户自己导入的同名脚本同样生效。
+     */
+    private val MUTEX_GROUPS: List<Set<String>> = listOf(
+        setOf("自动蟠桃", "蟠桃择船"),
+    )
+
+    /**
+     * 开关脚本。开启互斥组内的脚本时,自动关闭同组其他已开启的脚本。
+     * 返回被自动关闭的脚本名(供 UI 提示),没有则为空列表。
+     */
+    fun toggleScript(id: String, enabled: Boolean): List<String> {
         val i = scripts.indexOfFirst { it.id == id }
-        if (i < 0) return
-        if (scripts[i].locked) return
+        if (i < 0) return emptyList()
+        if (scripts[i].locked) return emptyList()
         scripts[i] = scripts[i].copy(enabled = enabled)
+        val disabled = mutableListOf<String>()
+        if (enabled) {
+            val group = MUTEX_GROUPS.firstOrNull { scripts[i].displayName in it }
+            if (group != null) {
+                for (j in scripts.indices) {
+                    if (j == i || !scripts[j].enabled) continue
+                    if (scripts[j].displayName in group) {
+                        scripts[j] = scripts[j].copy(enabled = false)
+                        disabled.add(scripts[j].displayName)
+                    }
+                }
+            }
+        }
         save()
         scriptsRevision.value++
+        return disabled
     }
 
     fun removeScript(id: String) {

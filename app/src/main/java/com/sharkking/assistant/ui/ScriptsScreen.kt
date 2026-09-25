@@ -118,7 +118,12 @@ fun ScriptsScreen(store: AppStore) {
                         Switch(
                             checked = s.enabled,
                             enabled = !s.locked,
-                            onCheckedChange = { store.toggleScript(s.id, it) },
+                            onCheckedChange = {
+                                val turnedOff = store.toggleScript(s.id, it)
+                                if (turnedOff.isNotEmpty()) {
+                                    tip.show("互斥:已关闭 " + turnedOff.joinToString("、"))
+                                }
+                            },
                         )
                     }
                 }
@@ -136,7 +141,11 @@ fun ScriptsScreen(store: AppStore) {
                 style = MaterialTheme.typography.titleLarge,
             )
             SheetRow(if (s.enabled) "禁用" else "启用") {
-                store.toggleScript(s.id, !s.enabled); target = null
+                val turnedOff = store.toggleScript(s.id, !s.enabled)
+                if (turnedOff.isNotEmpty()) {
+                    tip.show("互斥:已关闭 " + turnedOff.joinToString("、"))
+                }
+                target = null
             }
             SheetRow("删除", danger = true) {
                 store.removeScript(s.id); target = null
