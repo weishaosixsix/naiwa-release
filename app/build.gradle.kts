@@ -16,6 +16,13 @@ val releaseStorePath = keystoreProps.getProperty("storeFile")
 val hasReleaseSigning = !releaseStorePath.isNullOrBlank() && file(releaseStorePath).exists()
 
 // 版本名单提出来：产物文件名要用，留在 defaultConfig 里会变成两处来源
+//
+// 发版三件事必须一起动，缺一就会出问题：
+//   1. appVersionName 抬一号（1.1.0 → 1.1.1 修 bug / 1.2.0 加功能）
+//   2. versionCode 加 1（Android 用它拒绝降级安装，只需严格递增）
+//   3. GitHub release 的 tag 写 "v" + 版本名（如 v1.1.1）—— 更新检查是从
+//      tag 里取数字和本机的 versionName 比：tag 没抬则所有用户永远收不到
+//      提示；tag 抬了而 APK 版本没抬则用户被反复提示、装完却还是旧版。
 val appVersionName = "1.1.0"
 
 android {
