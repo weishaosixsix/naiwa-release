@@ -87,4 +87,35 @@ class UpdateCheckerTest {
         assertTrue("实际为 ${info.sizeText}", info.sizeText.startsWith("11.7"))
         assertTrue(info.sizeText.endsWith("MB"))
     }
+
+    // ---- 国内兜底:latest.json 解析(api 被墙时的检查通道) ----
+
+    @Test
+    fun `latest json 解析出版本与下载地址`() {
+        val info = UpdateChecker.parseLatestJson(
+            """{"versionName":"1.2.0","sizeBytes":12238411,"notes":"更新说明"}""",
+        ) ?: throw AssertionError("合法 json 不应解析失败")
+        assertEquals("1.2.0", info.versionName)
+        assertEquals(UpdateChecker.parseVersionCode("1.2.0"), info.versionCode)
+        assertEquals("更新说明", info.notes)
+        assertEquals(12238411L, info.sizeBytes)
+        assertTrue(
+            "rawUrl 应指向固定的最新附件地址",
+            info.rawUrl.endsWith("/releases/latest/download/yuduoduo-latest.apk"),
+        )
+    }
+
+    @Test
+    fun `latest json 的版本名带 v 前缀也能解析`() {
+        val info = UpdateChecker.parseLatestJson("""{"versionName":"v1.2.0"}""")!!
+        assertEquals("1.2.0", info.versionName)
+    }
+
+    @Test
+    fun `latest json 缺版本名或损坏时返回 null 而非抛异常`() {
+        assertEquals(null, UpdateChecker.parseLatestJson("""{"sizeBytes":1}"""))
+        assertEquals(null, UpdateChecker.parseLatestJson("""{"versionName":""}"""))
+        assertEquals(null, UpdateChecker.parseLatestJson("not json at all"))
+        assertEquals(null, UpdateChecker.parseLatestJson(""))
+    }
 }

@@ -49,6 +49,22 @@ object UpdateChecker {
         "", // 直连兜底
     )
 
+    /**
+     * 国内兜底检查用的固定附件名。
+     *
+     * api.github.com 在国内被间歇性拦截，查不到就永远不提示更新，而下载本身
+     * 走镜像是通的。所以每次 release 除 APK 外还固定带一个 latest.json
+     * （版本名/大小/说明），检查失败时改走「镜像 + 固定地址」拿它：
+     * GitHub 的 releases/latest/download/<名> 永远指向最新 release 的同名附件，
+     * 三个镜像都已实测能代理这个地址（会跟随 302）。
+     * 因此附件名必须跨版本不变，发版脚本 tools/publish_release.py 负责生成。
+     */
+    private const val APK_ASSET = "yuduoduo-latest.apk"
+    private const val LATEST_JSON = "latest.json"
+
+    private fun latestAssetUrl(asset: String): String =
+        "https://github.com/${BuildConfig.UPDATE_REPO}/releases/latest/download/$asset"
+
     /** 把 tag 或版本名解析成可比较的整数。1.0.95 -> 10095 */
     fun parseVersionCode(raw: String): Int {
         val nums = Regex("\\d+").findAll(raw.trim().removePrefix("v").removePrefix("V"))
@@ -87,9 +103,15 @@ object UpdateChecker {
     }
 
     private fun fetchLatest(): ReleaseInfo? {
+        // 先走官方 API；api.github.com 在国内常被拦，失败再走镜像的固定附件地址
+        fetchLatestFromApi()?.let { return it }
+        return fetchLatestViaAsset()
+    }
+
+    private fun fetchLatestFromApi(): ReleaseInfo? {
         val api = "https://api.github.com/repos/${BuildConfig.UPDATE_REPO}/releases/latest"
         val body = httpGet(api) ?: return null
-        val obj = JSONObject(body)
+        val obj = runCatching { JSONObject(body) }.getOrNull() ?: return null
         val tag = obj.optString("tag_name").ifBlank { return null }
 
         val assets = obj.optJSONArray("assets")
@@ -115,6 +137,32 @@ object UpdateChecker {
             sizeBytes = size,
         )
     }
+
+    /**
+     * 国内兜底：镜像 + 固定附件地址拿 latest.json。
+     * 依赖发版时带上了这个附件（见类顶注释），没有就查不到，属发布方失误。
+     */
+    private fun fetchLatestViaAsset(): ReleaseInfo? {
+        val jsonUrl = latestAssetUrl(LATEST_JSON)
+        for (prefix in MIRRORS) {
+            val body = httpGet(prefix + jsonUrl) ?: continue
+            return parseLatestJson(body) ?: continue
+        }
+        return null
+    }
+
+    /** 解析 latest.json。纯函数便于单测。 */
+    fun parseLatestJson(body: String): ReleaseInfo? = runCatching {
+        val o = JSONObject(body)
+        val ver = o.optString("versionName").ifBlank { return null }
+        ReleaseInfo(
+            versionName = ver.removePrefix("v"),
+            versionCode = parseVersionCode(ver),
+            notes = o.optString("notes"),
+            rawUrl = latestAssetUrl(APK_ASSET),
+            sizeBytes = o.optLong("sizeBytes"),
+        )
+    }.getOrNull()
 
     private fun httpGet(url: String): String? {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
