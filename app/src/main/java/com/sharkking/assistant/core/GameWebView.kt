@@ -403,6 +403,8 @@ class GameWebViewHolder(
                 Log.w(TAG, "资源未命中且取回失败(状态 ${r.status}): $sub")
                 return null
             }
+            // 命中/入库各记一条:拦截是否生效、缓存是否在省流量,看日志就知道
+            Log.i(TAG, "资源缓存: $sub (${file.length() / 1024} KB)")
             return WebResourceResponse(
                 r.contentType ?: "application/octet-stream",
                 null,
