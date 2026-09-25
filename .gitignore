@@ -28,3 +28,6 @@ app/src/main/assets/renderer/*
 # 社区脚本不入库，版权归各自作者
 app/src/main/assets/scripts/*
 !app/src/main/assets/scripts/README.md
+
+# 签名配置（含密码），不入库
+keystore.properties

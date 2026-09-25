@@ -1,6 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  图标改成了一张动画截图，所以走「满幅背景」：
+  整张图当背景层铺满，前景留空 —— 启动器遮罩切掉的是图本身的四角，
+  而不是在周围露出一圈人造色边（截图四边颜色本来就各不相同，
+  挑不出一个不打架的兜底色）。
+
+  想回到「前景缩到 82% + 纯色兜底」的旧样式：
+  把 background 改回 @color/icon_background、foreground 指回
+  @mipmap/ic_launcher_foreground，旧图标取 git 历史里的版本。
+-->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@color/icon_background" />
-    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
-    <monochrome android:drawable="@mipmap/ic_launcher_foreground" />
+    <background android:drawable="@mipmap/ic_launcher_background" />
+    <foreground android:drawable="@android:color/transparent" />
 </adaptive-icon>

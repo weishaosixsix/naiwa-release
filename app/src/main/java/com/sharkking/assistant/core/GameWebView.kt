@@ -17,6 +17,7 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -24,8 +25,11 @@ import android.widget.Toast
 
 private const val TAG = "奶蛙"
 
-/** 主窗口触摸事件回调，用于同步器广播 */
-typealias SyncTouchListener = (x: Float, y: Float) -> Unit
+/** 游戏资源包所在的 CDN 主机,只缓存它的资源树 */
+private const val ASSET_HOST = "xxz-xyzw-res.hortorgames.com"
+
+/** 主窗口触摸事件回调，用于同步器广播。phase 为 start/move/end/cancel */
+typealias SyncTouchListener = (x: Float, y: Float, phase: String) -> Unit
 
 /**
  * 游戏容器，对应 iOS 版的 GameWebView + Coordinator。
@@ -37,8 +41,11 @@ class GameWebViewHolder(
     private val binHex: String,
     private val binLabel: String,
     private val scriptsProvider: () -> List<Triple<String, String, String>>,
-    private val isSyncMaster: Boolean,
-    private val syncEnabled: Boolean,
+    /**
+     * 实时读取同步器开关，不能在构造时快照。
+     * 开关可能在窗口开好之后才打开，快照值会让它永远看不到变更。
+     */
+    private val syncEnabledProvider: () -> Boolean,
     private val onSyncTouch: SyncTouchListener?,
     private val onScriptStatus: ((String) -> Unit)? = null,
 ) {
@@ -68,6 +75,13 @@ class GameWebViewHolder(
             setSupportZoom(false)
             builtInZoomControls = false
             displayZoomControls = false
+            // 保持默认的缓存语义。
+            //
+            // 不要改成 LOAD_CACHE_ELSE_NETWORK：那是整个 WebView 的策略，
+            // 连接口请求的 GET 也会被冻结成旧响应 —— 启动时要拿的加密码本
+            // 拿了旧的，登录就和服务端对不上，游戏会卡在"正在加载平台"。
+            // 资源包的"下一次就不用再下"由 AssetCache 精确处理，只拦那一棵
+            // 版本化的资源树。
             cacheMode = WebSettings.LOAD_DEFAULT
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             javaScriptCanOpenWindowsAutomatically = true
@@ -124,18 +138,45 @@ class GameWebViewHolder(
         eval(InjectScripts.setFrameRate(if (background) BG_FPS else FG_FPS))
     }
 
-    /** 标签模式下同步源会随当前标签变化，需要运行时可改 */
-    var syncMaster: Boolean = isSyncMaster
+    /**
+     * 本窗口收到别的窗口同步过来的触摸：按阶段合成触摸事件。
+     *
+     * 必须 post 到 UI 线程。onSyncTouch 是 @JavascriptInterface 回调，运行在
+     * WebView 的 JavaBridge 线程上，而 evaluateJavascript 只能在创建 WebView 的
+     * 那个线程调用，否则抛「All WebView methods must be called on the same
+     * thread」—— 而 eval 里的 runCatching 把这个异常吞掉了，表现就是同步器
+     * 完全没有反应：广播执行了，接收端却一次都没被调用到。
+     * 同一个类里其他桥接方法（gmRequest / onScriptStatus）都写了 webView.post，
+     * 只有这里漏了。
+     */
+    fun applySyncTouch(x: Float, y: Float, phase: String) {
+        webView.post {
+            if (!pageReady) return@post
+            eval("window.__applySyncTouch && window.__applySyncTouch($x, $y, '$phase');")
+        }
+    }
 
-    /** 副窗口收到主窗口的同步坐标 */
-    fun applySyncTouch(x: Float, y: Float) {
-        if (!pageReady) return
-        eval("window.__applySyncTouch && window.__applySyncTouch($x, $y);")
+    /**
+     * 装载同步器。
+     *
+     * 开关可能在窗口已经开好之后才打开，所以必须能随时补装。原来只在
+     * onPageFinished 那个时机判断一次，用户开了开关也没有人重新注入，
+     * 表现就是「多开时同步完全没反应」。注入脚本自带幂等标记，重复调用安全。
+     */
+    fun injectSyncer() {
+        if (renderGone || !pageReady) return
+        if (!syncEnabledProvider()) return
+        // 两端都装：发送端负责上报，接收端负责合成，任意窗口两种都会用上
+        eval(InjectScripts.SYNCER_SENDER)
+        eval(InjectScripts.SYNCER_RECEIVER)
+        Log.i(TAG, "同步器已注入")
     }
 
     private fun eval(js: String) {
         if (renderGone) return
+        // 不要把失败吞掉：这里的异常曾经让"同步器没反应"查了很久查不出来
         runCatching { webView.evaluateJavascript(js, null) }
+            .onFailure { Log.w(TAG, "evaluateJavascript 失败: ${it.message}") }
     }
 
     /** 页面开始加载时就要注入的脚本，越早越好 */
@@ -158,13 +199,7 @@ class GameWebViewHolder(
         eval(InjectScripts.VH_FIX)
         eval(InjectScripts.SCRIPT_UI_FIX)
         eval(InjectScripts.CANVAS_GUARD)
-        if (syncEnabled) {
-            // 两端都装：谁当同步源由 syncMaster 在运行时判断，
-            // 标签模式下当前标签会变化，不能在注入时写死。
-            eval(InjectScripts.SYNCER_SENDER)
-            eval(InjectScripts.SYNCER_RECEIVER)
-            Log.i(TAG, "同步器已注入")
-        }
+        injectSyncer()
         injectUserScripts()
         // 页面就绪前的降帧请求会被忽略，这里补上
         if (backgrounded) eval(InjectScripts.setFrameRate(BG_FPS))
@@ -342,6 +377,51 @@ class GameWebViewHolder(
     }
 
     private inner class Client : WebViewClient() {
+
+        /**
+         * 游戏资源包的磁盘缓存:只拦 xxz-xyzw-res.hortorgames.com 下的资源请求。
+         *
+         * 游戏启动要拉两百多个文件(主包单个 16.8MB)。这些 URL 是版本化的
+         * (remote/game/index.c2e0f.jsc),内容一变名字就变,所以缓存下来
+         * 既不会拿到旧资源,又能省掉重复下载 —— 第二个窗口、重开窗口、
+         * 重启应用都直接走本地磁盘,不再消耗流量。
+         *
+         * 游戏用自己的加载器(基于 XHR)取这些资源,页面与 CDN 是跨域的,
+         * 所以合成响应**必须带 Access-Control-Allow-Origin** —— 上一版就是
+         * 因为没带这个头,XHR 全被同源策略挡掉,游戏卡在加载
+         * (桌面对照实验证实:同一响应,带头 XHR 成功,不带头被拦)。
+         *
+         * 任何异常都返回 null 交给系统正常加载,绝不把加载路径堵死。
+         */
+        override fun shouldInterceptRequest(
+            view: WebView?, request: WebResourceRequest?,
+        ): WebResourceResponse? {
+            val url = request?.url?.toString() ?: return null
+            val sub = assetSubPath(url) ?: return null
+            val r = AssetCache.fetch(File(ctx.cacheDir, "gamecache"), url, sub)
+            val file = r.file ?: run {
+                Log.w(TAG, "资源未命中且取回失败(状态 ${r.status}): $sub")
+                return null
+            }
+            return WebResourceResponse(
+                r.contentType ?: "application/octet-stream",
+                null,
+                r.status,
+                "OK",
+                mapOf("Access-Control-Allow-Origin" to "*"),
+                file.inputStream(),
+            )
+        }
+
+        /** CDN 资源树内的路径;其余(接口、带查询串的)一律返回 null 不拦 */
+        private fun assetSubPath(url: String): String? {
+            val prefix = "https://$ASSET_HOST/"
+            if (!url.startsWith(prefix) || url.contains('?')) return null
+            val path = url.substring(prefix.length)
+            if (path.isEmpty() || path.contains("..")) return null
+            return if (path.all { it.isLetterOrDigit() || it in "._-/+" }) path else null
+        }
+
         override fun onPageStarted(v: WebView?, url: String?, favicon: Bitmap?) {
             injectEarly()
         }
@@ -396,14 +476,25 @@ class GameWebViewHolder(
     /** JS 可调用的原生能力 */
     private inner class Bridge {
 
+        /**
+         * 同步器广播：把本窗口的触摸转发给其余窗口。
+         *
+         * 这里原来还有一道 `!syncMaster` 判断，只有"主窗口"会上报 —— 而主窗口
+         * 只是最先打开的那个，界面上仅靠标题栏一个小标记辨认。点在别的窗口上
+         * 毫无反应，用户只会得出"同步器没用"的结论（实测就是这样）。
+         *
+         * 现在任意窗口都能驱动同步。收到同步事件的窗口合成出来的触摸会被
+         * __syncing 护栏挡住，不会再广播回去，所以不存在回环。
+         */
         @JavascriptInterface
         fun onSyncTouch(json: String) {
-            if (!syncEnabled || !syncMaster) return
+            if (!syncEnabledProvider()) return
             runCatching {
                 val o = org.json.JSONObject(json)
                 onSyncTouch?.invoke(
                     o.getDouble("x").toFloat(),
                     o.getDouble("y").toFloat(),
+                    o.optString("phase", "start"),
                 )
             }
         }

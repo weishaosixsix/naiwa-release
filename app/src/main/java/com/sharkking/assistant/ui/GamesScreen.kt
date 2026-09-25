@@ -56,6 +56,12 @@ fun GamesScreen(store: AppStore, baseUrl: String?) {
         holders.values.forEach { it.injectUserScripts() }
     }
 
+    // 同步器开关变动时立即补装。原来这个开关只改了状态、没有人重新注入，
+    // 必须先关掉窗口重开才生效 —— 这正是「多开时同步不生效」的原因。
+    LaunchedEffect(store.syncEnabled.value) {
+        holders.values.forEach { it.injectSyncer() }
+    }
+
     val tabMode = store.tabMode.value
     val current = store.currentWindow()
 
@@ -66,7 +72,6 @@ fun GamesScreen(store: AppStore, baseUrl: String?) {
             val active = w.id == current?.id
             holders[w.id]?.let {
                 it.setBackgrounded(tabMode && !active)
-                it.syncMaster = if (tabMode) active else w.isSyncMaster
             }
         }
     }
@@ -107,7 +112,7 @@ fun GamesScreen(store: AppStore, baseUrl: String?) {
                 // 同步器总开关
                 IconButton(onClick = {
                     val on = !store.syncEnabled.value
-                    store.syncEnabled.value = on
+                    store.setSyncEnabled(on)
                     tip.show(if (on) "已开启同步器" else "已关闭同步器")
                 }) {
                     Icon(
@@ -157,15 +162,17 @@ fun GamesScreen(store: AppStore, baseUrl: String?) {
         // 所有窗口都留在组合树里、都是全屏尺寸并互相重叠。
         // 隐藏靠 WebView 自身的 visibility（见 setBackgrounded）：
         // 布局尺寸不变所以不会重排，同时后台窗口不参与绘制。
-        Box(Modifier.fillMaxSize()) {
-            if (tabMode) {
+        if (tabMode) {
+            // 标签模式：所有窗口都是全屏尺寸、互相重叠，靠 WebView 自身的
+            // visibility 切换（见 setBackgrounded），布局尺寸不变所以不会重排。
+            // 全部子项都在同一个 Box 下、只按 id 增删，本身就是稳定的。
+            Box(Modifier.fillMaxSize()) {
                 store.windows.forEach { w ->
-                    // key 保证列表增删时 WebView 实例不被错配到别的窗口
                     key(w.id) {
                         WindowPane(
                             store = store,
                             window = w,
-                            baseUrl = baseUrl,
+                            baseUrl = baseUrl ?: "",
                             holders = holders,
                             compact = false,
                             onStatus = { statusOf[w.id] = it },
@@ -174,32 +181,38 @@ fun GamesScreen(store: AppStore, baseUrl: String?) {
                         )
                     }
                 }
-            } else {
-                // 网格：游戏是竖屏内容，纯竖向等分会把每格压成宽扁条，
-                // 分成多列后单格长宽比才接近屏幕本身。
+            }
+        } else {
+            // 分屏模式：所有窗口都放在同一个 Box 里，各自按网格算出的偏移与尺寸摆位。
+            //
+            // 不能用「按窗口数生成不同行列结构」的写法：窗口数一变，列数和每个窗口
+            // 所属的行就变，Compose 会把移到另一行/列的面板当成新节点 —— 里面的
+            // WebView 被重建，那个窗口的游戏就得从 CDN 重新下载一遍。实测表现是
+            // 关掉一个窗口，其余窗口全部重新加载游戏，又慢又费流量。
+            // 这里保持树的结构恒定（一个 Box + N 个带 key 的子项），增删窗口时
+            // 已有的子项父容器不变、key 不变，状态与 WebView 都得以保留。
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+                // 游戏是竖屏内容，纯竖向等分会把每格压成宽扁条，分列后单格比例才接近屏幕
                 val cols = columnsFor(store.windows.size)
-                val rows = store.windows.chunked(cols)
-                Column(Modifier.fillMaxSize()) {
-                    rows.forEach { rowWindows ->
-                        Row(Modifier.fillMaxWidth().weight(1f)) {
-                            rowWindows.forEach { w ->
-                                Box(Modifier.fillMaxHeight().weight(1f)) {
-                                    key(w.id) {
-                                        WindowPane(
-                                            store = store,
-                                            window = w,
-                                            baseUrl = baseUrl,
-                                            holders = holders,
-                                            compact = store.windows.size > 1,
-                                            onStatus = { statusOf[w.id] = it },
-                                        )
-                                    }
-                                }
-                            }
-                            // 末行不足一列时补空位，避免最后一个窗口被拉宽
-                            repeat(cols - rowWindows.size) {
-                                Spacer(Modifier.fillMaxHeight().weight(1f))
-                            }
+                val rows = (store.windows.size + cols - 1) / cols
+                val cellW = maxWidth / cols
+                val cellH = maxHeight / rows
+                store.windows.forEachIndexed { i, w ->
+                    key(w.id) {
+                        Box(
+                            Modifier
+                                .offset(x = cellW * (i % cols), y = cellH * (i / cols))
+                                .size(cellW, cellH)
+                        ) {
+                            WindowPane(
+                                store = store,
+                                window = w,
+                                baseUrl = baseUrl ?: "",
+                                holders = holders,
+                                compact = store.windows.size > 1,
+                                onStatus = { statusOf[w.id] = it },
+                                showBar = true,
+                            )
                         }
                     }
                 }
@@ -309,7 +322,6 @@ private fun WindowPane(
     showBar: Boolean = true,
 ) {
     val account = store.accountOf(window) ?: return
-    val syncOn = store.syncEnabled.value
     val barHeight = if (compact) 22.dp else 30.dp
     val iconSize = if (compact) 15.dp else 19.dp
     var scriptStatus by remember { mutableStateOf("") }
@@ -330,7 +342,6 @@ private fun WindowPane(
                 Text(
                     buildString {
                         append(window.title)
-                        if (window.isSyncMaster && syncOn) append(" · 主")
                         if (scriptStatus.isNotEmpty()) append(" · $scriptStatus")
                     },
                     style = if (compact) MaterialTheme.typography.labelSmall
@@ -373,20 +384,19 @@ private fun WindowPane(
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
+                // 同一窗口若被重建（正常情况下 movableContentOf 已经避免），
+                // 先销毁旧实例：旧的 WebView 会继续跑游戏、继续下资源，白吃流量
+                holders.remove(window.id)?.destroy()
                 val holder = GameWebViewHolder(
                     ctx = ctx,
                     binHex = account.binHex,
                     binLabel = account.displayName,
                     scriptsProvider = { store.enabledScripts() },
-                    // 初始值；标签模式下由 LaunchedEffect 随当前标签更新 syncMaster
-                    isSyncMaster = if (store.tabMode.value)
-                        window.id == store.currentWindow()?.id
-                    else window.isSyncMaster,
-                    syncEnabled = syncOn,
-                    onSyncTouch = { x, y ->
-                        // 主窗口触摸 -> 广播给其余窗口
+                    syncEnabledProvider = { store.syncEnabled.value },
+                    onSyncTouch = { x, y, phase ->
+                        // 本窗口的触摸 -> 广播给其余窗口
                         store.windows.filter { it.id != window.id }.forEach { other ->
-                            holders[other.id]?.applySyncTouch(x, y)
+                            holders[other.id]?.applySyncTouch(x, y, phase)
                         }
                     },
                     onScriptStatus = { scriptStatus = it; onStatus(it) },

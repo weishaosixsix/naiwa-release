@@ -113,6 +113,7 @@ class LocalHttpServer(private val rootDir: File) {
 
     private fun serveFile(path: String, out: OutputStream) {
         val rel = path.trimStart('/').ifEmpty { "index.html" }
+
         val target = File(rootDir, rel)
 
         // 防目录穿越：解析后的真实路径必须仍在根目录内
@@ -145,7 +146,11 @@ class LocalHttpServer(private val rootDir: File) {
             append("Content-Type: $mime\r\n")
             append("Content-Length: $length\r\n")
             append("Access-Control-Allow-Origin: *\r\n")
-            append("Cache-Control: no-cache\r\n")
+            // 必须 no-store 而不是 no-cache：WebView 那边用的是
+            // LOAD_CACHE_ELSE_NETWORK，连过期内容都直接用，而 no-cache 只是
+            // 「要校验」，会被跳过。本地文件在升级后内容会变（renderer 与
+            // userscripts），一旦被缓存就会加载到旧文件 —— 表现为白屏。
+            append("Cache-Control: no-store\r\n")
             append("Connection: close\r\n\r\n")
         }
         out.write(header.toByteArray())

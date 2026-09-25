@@ -28,7 +28,21 @@ class AppStore(private val ctx: Context) {
         private const val K_PRESET_DONE = "preset_stamp"
         private const val K_TAB_MODE = "tab_mode"
         private const val K_DARK = "dark_theme"
-        const val WINDOW_LIMIT = 6
+        private const val K_SYNC = "sync_enabled"
+        /**
+         * 一次最多能开几个窗口，同时是「上限」下拉菜单的选项范围。
+         *
+         * 原来写死 6，是作者按内存留的保守值，**不是平台限制**。
+         * 真正的约束是内存：每个窗口都是一个完整 WebView 在跑一份 Cocos
+         * WebGL 游戏，而且要下 CDN 资源包、建纹理和 JS 堆；同一 App 的多个
+         * WebView 还共用渲染进程，所以开太多不是"慢一点"，而是整个渲染进程
+         * 一起被系统回收 —— onRenderProcessGone 兜得住不闪退，但那个时刻
+         * 所有窗口会一起没掉。
+         *
+         * 因此调大请配合实测：逐个往上加，观察会不会出现窗口成片消失。
+         * 6 是作者当时的机器上的舒服值；这里放宽到 12，按自己机器再调。
+         */
+        const val WINDOW_LIMIT = 12
 
         /**
          * v3 之前存下的脚本没有 preset 标记。这些名字是历史版本内置过的，
@@ -57,7 +71,17 @@ class AppStore(private val ctx: Context) {
     val windows = mutableStateListOf<GameWindow>()
 
     val maxWindows = mutableStateOf(2)
+
+    /**
+     * 同步器开关。要持久化：它原来只在内存里，每次重启应用都回到关闭，
+     * 用户会以为"同步器又坏了" —— 实际上是开关自己关了。
+     */
     val syncEnabled = mutableStateOf(false)
+
+    fun setSyncEnabled(on: Boolean) {
+        syncEnabled.value = on
+        prefs.edit().putBoolean(K_SYNC, on).apply()
+    }
 
     /** 脚本启用状态的变更计数，游戏窗口据此重新注入，无需重开 */
     val scriptsRevision = mutableStateOf(0)
@@ -84,7 +108,7 @@ class AppStore(private val ctx: Context) {
     fun setTabMode(on: Boolean) {
         tabMode.value = on
         // 标签模式下同步器影响的是看不见的后台账号，切换时一律先关掉
-        if (on) syncEnabled.value = false
+        if (on) setSyncEnabled(false)
         if (on && activeWindowId.value == null) {
             activeWindowId.value = windows.firstOrNull()?.id
         }
@@ -170,6 +194,8 @@ class AppStore(private val ctx: Context) {
             maxWindows.value = prefs.getInt(K_MAX_WIN, 2)
             tabMode.value = prefs.getBoolean(K_TAB_MODE, false)
             darkTheme.value = prefs.getBoolean(K_DARK, true)
+            // 标签模式下同步器无意义，恢复时直接按关闭处理
+            syncEnabled.value = !tabMode.value && prefs.getBoolean(K_SYNC, false)
         }.onFailure { Log.w(TAG, "读取失败: ${it.message}") }
     }
 

@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 取自图标木框的主色，自适应图标裁切后露出的边与木框同色 -->
-    <color name="icon_background">#AD7E54</color>
+    <!--
+      图标改成满幅截图后不再需要兜底色，原先的木框主色留在这里备查：
+      #AD7E54 —— 要回到旧样式时把它加回来并改回 ic_launcher.xml。
+    -->
 </resources>

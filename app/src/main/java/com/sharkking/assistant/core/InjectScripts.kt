@@ -286,17 +286,140 @@ object InjectScripts {
      * 原因是 WebSettings.useWideViewPort=true（多开缩放要用它）让 Blink
      * 的视口高度不确定，vh 基准退化为 0。
      *
-     * 后果是所有用 vh 限高的脚本面板都被压扁：
-     * 白玉彩玉 `max-height:88vh` 变 0，面板只剩 2px（一条白线）；
-     * 无限阵容 `max-height:78vh` 变 0，只显示标题。
+     * 后果是所有用 vh 限高的脚本面板都被压扁：白玉彩玉 `max-height:88vh`
+     * 变 0，面板只剩 2px（一条白线）；无限阵容 `max-height:78vh` 变 0，
+     * 只显示标题。
      *
      * 修法：遍历脚本插入的样式表，把 vh 换算成实际像素后重写规则。
      * 不用 CSS 硬编码具体选择器 —— 那样每加一个脚本都要改代码。
+     *
+     * 2026-09-23 查出它其实早已整体失效，鲸鱼面板（`.xianxia-panel.expanded
+     * { max-height: 92vh }`）就是被压成 2px 的，规则始终没被替换过：
+     *
+     * **真凶：CSS 嵌套之后不能拿「有 cssRules」判断是不是容器规则。**
+     * 浏览器支持 CSS Nesting 以后，每条普通 CSSStyleRule 也带一个 cssRules
+     * （通常是空列表，但为真值）。原来的 `if (r.cssRules) { 递归; continue; }`
+     * 于是对每一条规则都成立，递归进空列表就 continue 掉了规则自己的声明 ——
+     * 所有样式表规则一条都改不到，只有行内样式那个分支在工作。
+     * 这段代码写的时候还没有 CSS 嵌套，后来是无声失效的，注释里提到的
+     * 白玉彩玉 88vh、无限阵容 78vh 应该都是同一个原因。
+     * 改法：先处理规则自身的声明（有没有 style），再在有嵌套子规则时递归。
+     *
+     * 顺带修掉两处会漏改/改坏的地方：
+     * 1. 视口高度原本在注入时采样一次就闭包进 toPx。注入这一刻页面往往还没
+     *    布局，取到 0 会把 vh 全换算成 `0px` **写进样式表**，不可逆。改成
+     *    每次现取，取不到就跳过、留给重试。
+     * 2. patchAll 原本只在注入时和 STYLE/LINK 节点新增时执行一次，且观察器
+     *    只认元素节点，漏掉「先插空 <style> 再填内容」。改成补跑几次兜底，
+     *    并补上文本节点与 characterData 的判断。
+     *
+     * 改写明细留在 window.__vhFixStats，排查时可直接看改了几处、哪几条。
      */
     val VH_FIX = """
 (function(){
     if(window.__vhFixInstalled) return;
     window.__vhFixInstalled = true;
+
+    // 视口高度每次现取：注入时页面可能还没布局，取到 0 会把 vh 换算成 0px 写进样式表
+    function realHeight(){
+        var h = window.innerHeight || document.documentElement.clientHeight || 0;
+        return (isFinite(h) && h > 0) ? h : 0;
+    }
+
+    // vh -> px。放在 calc() 里也能正确参与运算。
+    function toPx(css, real){
+        return css.replace(/(-?[\d.]+)vh/g, function(_, n){
+            return (parseFloat(n) * real / 100).toFixed(1) + 'px';
+        });
+    }
+
+    var PROPS = ['max-height','min-height','height','top','bottom','padding-bottom','margin-bottom'];
+
+    var changed = [];
+    window.__vhFixStats = { runs: 0, patched: 0, skippedNoViewport: 0, changed: changed };
+
+    function patchSheet(sheet, real){
+        var rules;
+        try { rules = sheet.cssRules; } catch(e) { return 0; }   // 跨域样式表读不了
+        if (!rules) return 0;
+        var n = 0;
+        for (var i = 0; i < rules.length; i++) {
+            var r = rules[i];
+            // 先处理规则自己的声明。
+            // 注意不能拿「有 cssRules」当「是容器」用：CSS 嵌套之后每条普通
+            // 规则都带一个（通常为空的）cssRules，按老写法会 continue 掉每一条，
+            // 于是所有样式表规则都改不到 —— 这就是面板被 vh 压扁的真凶。
+            if (r.style) {
+                for (var p = 0; p < PROPS.length; p++) {
+                    var v = r.style.getPropertyValue(PROPS[p]);
+                    if (!v || v.indexOf('vh') < 0) continue;
+                    var out = toPx(v, real);
+                    r.style.setProperty(PROPS[p], out, r.style.getPropertyPriority(PROPS[p]));
+                    if (changed.length < 40) {
+                        changed.push((r.selectorText || '?') + ' {' + PROPS[p] + ': ' + v + ' -> ' + out + '}');
+                    }
+                    n++;
+                }
+            }
+            // 再进嵌套：@media 等分组规则，以及 CSS 嵌套的子规则
+            if (r.cssRules && r.cssRules.length) n += patchSheet(r, real);
+        }
+        return n;
+    }
+
+    // 复查用：还有多少条规则含 vh（跨域样式表读不到，不计入）
+    function countLeft(){
+        var n = 0;
+        function scan(rs){
+            for (var j = 0; j < rs.length; j++) {
+                var r = rs[j];
+                if (r.style) {
+                    for (var p = 0; p < PROPS.length; p++) {
+                        var v = r.style.getPropertyValue(PROPS[p]);
+                        if (v && v.indexOf('vh') >= 0) n++;
+                    }
+                }
+                if (r.cssRules && r.cssRules.length) scan(r.cssRules);
+            }
+        }
+        for (var i = 0; i < document.styleSheets.length; i++) {
+            var rules;
+            try { rules = document.styleSheets[i].cssRules; } catch(e) { continue; }
+            if (rules) scan(rules);
+        }
+        return n;
+    }
+
+    function patchAll(){
+        var real = realHeight();
+        if (!real) return -1;                 // 视口还没就绪：一条都不改，等下一次重试
+        var total = 0;
+        for (var i = 0; i < document.styleSheets.length; i++) {
+            total += patchSheet(document.styleSheets[i], real);
+        }
+        // 行内样式里的 vh 同样要换
+        document.querySelectorAll('[style*="vh"]').forEach(function(el){
+            var s = el.getAttribute('style');
+            if (s && /[\d.]vh/.test(s)) { el.setAttribute('style', toPx(s, real)); total++; }
+        });
+        return total;
+    }
+
+    // 已改过的规则不再含 vh，所以重复执行是幂等的，可以放心补跑
+    function run(tag){
+        window.__vhFixStats.runs++;
+        var c = patchAll();
+        if (c < 0) {
+            window.__vhFixStats.skippedNoViewport++;
+            console.log('[奶蛙] vh 修正: 视口未就绪(' + tag + ')，稍后重试');
+            return 0;
+        }
+        window.__vhFixStats.patched += c;
+        var left = countLeft();
+        console.log('[奶蛙] vh 修正 ' + c + ' 处(' + tag + ')' +
+            (left ? '，仍有 ' + left + ' 处含 vh' : ''));
+        return c;
+    }
 
     // 先确认 vh 真的坏了，正常的机型不要动
     var probe = document.createElement('div');
@@ -305,70 +428,39 @@ object InjectScripts {
     var vh100 = probe.getBoundingClientRect().height;
     document.body.removeChild(probe);
 
-    var real = window.innerHeight || document.documentElement.clientHeight;
-    if (vh100 > real * 0.5) {
+    var probeReal = realHeight();
+    if (probeReal && vh100 > probeReal * 0.5) {
         console.log('[奶蛙] vh 正常(100vh=' + vh100.toFixed(0) + 'px)，无需修正');
         return;
     }
     console.log('[奶蛙] vh 失效(100vh=' + vh100.toFixed(0) +
-        'px, 实际应为 ' + real + 'px)，开始替换');
+        'px, 视口高 ' + probeReal + 'px)，开始替换');
 
-    // vh -> px。放在 calc() 里也能正确参与运算。
-    function toPx(css){
-        return css.replace(/(-?[\d.]+)vh/g, function(_, n){
-            return (parseFloat(n) * real / 100).toFixed(1) + 'px';
-        });
+    run('初次');
+    // 样式表是脚本陆续插入的，规则也可能晚于节点插入才解析出来，补跑几次兜底
+    [1000, 3000, 8000].forEach(function(ms){
+        setTimeout(function(){ run('重试' + ms + 'ms'); }, ms);
+    });
+
+    // 新样式表：既看节点新增，也看 <style> 内容被填进去
+    var pending = null;
+    function schedule(){
+        if (pending) return;
+        pending = setTimeout(function(){ pending = null; run('新样式表'); }, 50);
     }
-
-    var PROPS = ['max-height','min-height','height','top','bottom','padding-bottom','margin-bottom'];
-
-    function patchSheet(sheet){
-        var rules;
-        try { rules = sheet.cssRules; } catch(e) { return 0; }   // 跨域样式表读不了
-        if (!rules) return 0;
-        var n = 0;
-        for (var i = 0; i < rules.length; i++) {
-            var r = rules[i];
-            if (r.cssRules) { n += patchSheet(r); continue; }    // @media 等嵌套
-            if (!r.style) continue;
-            for (var p = 0; p < PROPS.length; p++) {
-                var v = r.style.getPropertyValue(PROPS[p]);
-                if (!v || v.indexOf('vh') < 0) continue;
-                r.style.setProperty(PROPS[p], toPx(v), r.style.getPropertyPriority(PROPS[p]));
-                n++;
-            }
-        }
-        return n;
-    }
-
-    function patchAll(){
-        var total = 0;
-        for (var i = 0; i < document.styleSheets.length; i++) {
-            total += patchSheet(document.styleSheets[i]);
-        }
-        // 行内样式里的 vh 同样要换
-        document.querySelectorAll('[style*="vh"]').forEach(function(el){
-            var s = el.getAttribute('style');
-            if (s && /[\d.]vh/.test(s)) { el.setAttribute('style', toPx(s)); total++; }
-        });
-        return total;
-    }
-
-    console.log('[奶蛙] vh 替换 ' + patchAll() + ' 处');
-
-    // 脚本是陆续注入的，新样式表要继续处理
     new MutationObserver(function(muts){
         var need = false;
         muts.forEach(function(m){
             Array.prototype.slice.call(m.addedNodes).forEach(function(n){
                 if (n.nodeType === 1 && (n.tagName === 'STYLE' || n.tagName === 'LINK')) need = true;
+                // 先插空 <style> 再填内容：填进去的是文本节点，只认元素节点会漏
+                if (n.nodeType === 3 && n.parentNode && n.parentNode.tagName === 'STYLE') need = true;
             });
+            if (m.type === 'characterData' && m.target && m.target.parentNode &&
+                m.target.parentNode.tagName === 'STYLE') need = true;
         });
-        if (need) {
-            var c = patchAll();
-            if (c) console.log('[奶蛙] 新样式表 vh 替换 ' + c + ' 处');
-        }
-    }).observe(document.documentElement, { childList: true, subtree: true });
+        if (need) schedule();
+    }).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
 })();
 """.trimIndent()
 
@@ -439,65 +531,105 @@ object InjectScripts {
 })();
 """.trimIndent()
 
-    /** 同步器发送端：主窗口把触摸坐标上报给原生，由原生广播给副窗口 */
+    /**
+     * 同步器发送端：主窗口把触摸上报给原生，由原生广播给副窗口。
+     *
+     * 四个阶段都要发。原来只监听 touchstart，副窗口就只收到一个点，
+     * 而游戏里主要靠按住拖动，结果是"同步开着但游戏不动"。
+     */
     val SYNCER_SENDER = """
 (function(){
     if(window.__syncerSenderInstalled) return;
     window.__syncerSenderInstalled = true;
-    // capture 阶段拦截，确保在游戏 stopPropagation 之前捕获
-    document.addEventListener('touchstart', function(e){
-        var touch = e.touches[0];
-        if (!touch) return;
+    function send(e, phase){
+        // 接收端合成的事件不要被本窗口的发送端再上报一次，否则会形成回环。
+        // 现在只有主窗口会上报，本来也挡得住；这里是显式护栏，别改成靠单点判断。
+        if (window.__syncing) return;
+        var t = (e.changedTouches && e.changedTouches[0]) ||
+                (e.touches && e.touches[0]);
+        if (!t) return;
         try {
             AndroidBridge.onSyncTouch(JSON.stringify({
-                x: touch.clientX, y: touch.clientY, t: Date.now()
+                x: t.clientX, y: t.clientY, phase: phase, t: Date.now()
             }));
         } catch(err) {}
-    }, { capture: true, passive: true });
+    }
+    // capture 阶段拦截，确保在游戏 stopPropagation 之前捕获
+    var opts = { capture: true, passive: true };
+    document.addEventListener('touchstart',  function(e){ send(e, 'start');  }, opts);
+    document.addEventListener('touchmove',   function(e){ send(e, 'move');   }, opts);
+    document.addEventListener('touchend',    function(e){ send(e, 'end');    }, opts);
+    document.addEventListener('touchcancel', function(e){ send(e, 'cancel'); }, opts);
     console.log('[奶蛙] 同步器(发送端)已启用');
 })();
 """.trimIndent()
 
-    /** 同步器接收端：副窗口在指定坐标合成一次点击 */
+    /**
+     * 同步器接收端：副窗口按收到的阶段合成触摸序列。
+     *
+     * 同一次触摸要跨阶段保持同一个 identifier，move/end 才能接上；
+     * 每帧换 identifier 会被游戏当成全新的手势，拖动就断了。
+     */
     val SYNCER_RECEIVER = """
 (function(){
     if(window.__syncerRecvInstalled) return;
     window.__syncerRecvInstalled = true;
-    window.__applySyncTouch = function(x, y){
-        var canvas = document.getElementById('GameCanvas');
-        if (!canvas) return;
-        // Cocos2D 监听 canvas 上的 touch 事件，需要创建合法 Touch 对象
-        function fire(type){
-            var t;
-            try {
-                t = new Touch({
-                    identifier: Date.now() % 100000, target: canvas,
-                    clientX: x, clientY: y, pageX: x, pageY: y,
-                    screenX: x, screenY: y
-                });
-            } catch(e) {
-                t = { identifier: 1, target: canvas, clientX: x, clientY: y,
-                      pageX: x, pageY: y, screenX: x, screenY: y };
-            }
-            var ev;
-            try {
-                ev = new TouchEvent(type, {
-                    touches: type === 'touchend' ? [] : [t],
-                    targetTouches: type === 'touchend' ? [] : [t],
-                    changedTouches: [t],
-                    bubbles: true, cancelable: true, view: window
-                });
-            } catch(e) {
-                ev = document.createEvent('Event');
-                ev.initEvent(type, true, true);
-                ev.touches = type === 'touchend' ? [] : [t];
-                ev.targetTouches = ev.touches;
-                ev.changedTouches = [t];
-            }
-            canvas.dispatchEvent(ev);
+
+    var seq = 0;
+    var active = null;      // 当前这次触摸：{ id, x, y }
+    var activeEl = null;
+
+    function host(){
+        return document.getElementById('GameCanvas') ||
+               document.getElementById('Cocos2dGameContainer') || document.body;
+    }
+    // Cocos2D 监听 canvas 上的 touch 事件，需要创建合法 Touch 对象
+    function makeTouch(el, x, y, id){
+        try {
+            return new Touch({ identifier: id, target: el, clientX: x, clientY: y,
+                               pageX: x, pageY: y, screenX: x, screenY: y });
+        } catch(e) {
+            return { identifier: id, target: el, clientX: x, clientY: y,
+                     pageX: x, pageY: y, screenX: x, screenY: y };
         }
-        fire('touchstart');
-        setTimeout(function(){ fire('touchend'); }, 30);
+    }
+    function fire(type, el, x, y, id, isEnd){
+        var t = makeTouch(el, x, y, id);
+        var live = isEnd ? [] : [t];
+        var ev;
+        try {
+            ev = new TouchEvent(type, { touches: live, targetTouches: live,
+                changedTouches: [t], bubbles: true, cancelable: true, view: window });
+        } catch(e) {
+            ev = document.createEvent('Event');
+            ev.initEvent(type, true, true);
+            ev.touches = live; ev.targetTouches = live; ev.changedTouches = [t];
+        }
+        // 标记为"同步合成"，发送端据此忽略，避免两个窗口互相回环
+        window.__syncing = true;
+        try { el.dispatchEvent(ev); } finally { window.__syncing = false; }
+    }
+
+    window.__applySyncTouch = function(x, y, phase){
+        var el = host();
+        if (!el) return;
+        phase = phase || 'start';
+        if (phase === 'start') {
+            active = { id: ++seq, x: x, y: y };
+            activeEl = el;
+            fire('touchstart', el, x, y, active.id, false);
+        } else if (phase === 'move') {
+            // 没收到起点就忽略，免得留下半截手势
+            if (!active) return;
+            active.x = x; active.y = y;
+            fire('touchmove', activeEl || el, x, y, active.id, false);
+        } else {
+            // 抬起用发送端给的落点（和真实手势一致），identifier 沿用这一次触摸的
+            var id = active ? active.id : ++seq;
+            fire(phase === 'cancel' ? 'touchcancel' : 'touchend',
+                 activeEl || el, x, y, id, true);
+            active = null; activeEl = null;
+        }
     };
     console.log('[奶蛙] 同步器(接收端)已启用');
 })();
