@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -41,6 +42,28 @@ fun AccountsScreen(store: AppStore, onOpenGame: () -> Unit, onOpenImport: () -> 
     var renameTarget by remember { mutableStateOf<AccountItem?>(null) }
     val collapsed = remember { mutableStateMapOf<String, Boolean>() }
     var toast by remember { mutableStateOf<String?>(null) }
+    // 批量启动:勾选的账号 id
+    val selected = remember { mutableStateListOf<String>() }
+
+    // 批量启动一批账号。已在运行的跳过(不重复开);超上限的明确报数。
+    // 返回提示文案。
+    fun startBatch(accounts: List<AccountItem>): String {
+        val toStart = accounts.filter { acc ->
+            store.windows.none { it.accountId == acc.id }
+        }
+        if (toStart.isEmpty()) {
+            return if (accounts.isEmpty()) "该分组没有账号" else "所选账号已全部在运行"
+        }
+        var started = 0
+        var skipped = 0
+        for (acc in toStart) {
+            if (store.openWindow(acc) == null) skipped++ else started++
+        }
+        return buildString {
+            append("已启动 ").append(started).append(" 个窗口")
+            if (skipped > 0) append("，").append(skipped).append(" 个超出窗口上限")
+        }
+    }
     // 待导出的账号，等用户在系统选择器里选好位置后写入
     var exportPending by remember { mutableStateOf<AccountItem?>(null) }
 
@@ -111,6 +134,14 @@ fun AccountsScreen(store: AppStore, onOpenGame: () -> Unit, onOpenImport: () -> 
                         collapsed = isCollapsed,
                         onToggle = { collapsed[group.id] = !isCollapsed },
                         onLongClick = { renameGroupTarget = group },
+                        onStartAll = {
+                            if (list.isNotEmpty()) {
+                                toast = startBatch(list)
+                                if (store.windows.isNotEmpty()) onOpenGame()
+                            } else {
+                                toast = "该分组没有账号"
+                            }
+                        },
                     )
                 }
                 if (!isCollapsed) {
@@ -118,12 +149,42 @@ fun AccountsScreen(store: AppStore, onOpenGame: () -> Unit, onOpenImport: () -> 
                         AccountCard(
                             account = acc,
                             groupColor = Color(group.colorArgb),
+                            selected = acc.id in selected,
+                            onToggleSelect = {
+                                if (acc.id in selected) selected.remove(acc.id)
+                                else selected.add(acc.id)
+                            },
                             onClick = { actionTarget = acc },
                         )
                     }
                 }
             }
             item { Spacer(Modifier.height(24.dp)) }
+        }
+    }
+
+    // ---- 批量启动操作条 ----
+    if (selected.isNotEmpty()) {
+        Surface(
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            shadowElevation = 6.dp,
+        ) {
+            Row(
+                Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("已选 ${selected.size} 个")
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = {
+                    val chosen = store.accounts.filter { it.id in selected }
+                    toast = startBatch(chosen)
+                    selected.clear()
+                    if (store.windows.isNotEmpty()) onOpenGame()
+                }) { Text("启动所选") }
+                TextButton(onClick = { selected.clear() }) { Text("取消") }
+            }
         }
     }
 
@@ -251,6 +312,7 @@ private fun GroupHeader(
     collapsed: Boolean,
     onToggle: () -> Unit,
     onLongClick: () -> Unit,
+    onStartAll: () -> Unit,
 ) {
     Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
         Row(
@@ -266,6 +328,11 @@ private fun GroupHeader(
             Spacer(Modifier.width(6.dp))
             Text("($count)", style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.weight(1f))
+            TextButton(onClick = onStartAll) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                Spacer(Modifier.width(2.dp))
+                Text("启动")
+            }
             TextButton(onClick = onLongClick) { Text("管理") }
             Icon(
                 if (collapsed) Icons.Filled.ExpandMore else Icons.Filled.ExpandLess,
@@ -279,6 +346,8 @@ private fun GroupHeader(
 private fun AccountCard(
     account: AccountItem,
     groupColor: Color,
+    selected: Boolean,
+    onToggleSelect: () -> Unit,
     onClick: () -> Unit,
 ) {
     Card(
@@ -290,6 +359,11 @@ private fun AccountCard(
             Modifier.padding(14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Checkbox(
+                checked = selected,
+                onCheckedChange = { onToggleSelect() },
+                modifier = Modifier.padding(end = 4.dp),
+            )
             Box(Modifier.size(10.dp).clip(CircleShape).background(groupColor))
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
