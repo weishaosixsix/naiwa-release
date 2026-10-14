@@ -62,9 +62,21 @@ class LocalHttpServer(private val rootDir: File) {
             return null
         }
         return try {
-            // 端口传 0 让系统自动分配，避免固定端口被占用
+            // 固定端口优先：游戏页的 localStorage 按"地址"隔离
+            // (http://127.0.0.1:端口)，端口一换旧存档就整片"消失"
+            // ——脚本的阵容/设置/记录全存在这里，游戏的资源版本缓存也在。
+            // 被占用时向后顺延，全被占才退回随机端口(罕见，仅该次启动存档失联)。
             val loopback = InetAddress.getByName("127.0.0.1")
-            serverSocket = ServerSocket(0, 8, loopback)
+            val preferred = intArrayOf(38880, 38881, 38882, 38883, 38884)
+            var sock: ServerSocket? = null
+            for (pp in preferred) {
+                try {
+                    sock = ServerSocket(pp, 8, loopback)
+                    break
+                } catch (_: Exception) {}
+            }
+            if (sock == null) sock = ServerSocket(0, 8, loopback)
+            serverSocket = sock
             port = serverSocket!!.localPort
             running.set(true)
             pool.execute { acceptLoop() }
