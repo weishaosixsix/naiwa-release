@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- 本地 HTTP 服务器走明文回环，其余域名保持 HTTPS -->
+    <!-- 本地 HTTP 服务器走明文回环;激活服务器为公网 IP 的明文 HTTP
+         (国内云服务器未备案无法用 80/443,只能用自定义端口),
+         这里显式放行该 IP,其余域名保持 HTTPS -->
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">127.0.0.1</domain>
         <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">122.51.231.89</domain>
     </domain-config>
 </network-security-config>
