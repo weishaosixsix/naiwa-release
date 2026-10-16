@@ -10,9 +10,15 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import com.sharkking.assistant.core.License
 import com.sharkking.assistant.core.LocalHttpServer
 import com.sharkking.assistant.core.RendererCache
 import com.sharkking.assistant.data.AppStore
+import com.sharkking.assistant.ui.ActivationScreen
 import com.sharkking.assistant.ui.RootScreen
 
 class MainActivity : ComponentActivity() {
@@ -37,10 +43,24 @@ class MainActivity : ComponentActivity() {
                     .isAppearanceLightStatusBars = !dark
             }
             MaterialTheme(colorScheme = if (dark) XuebiDarkColors else XuebiLightColors) {
-                RootScreen(
-                    store = store,
-                    baseUrl = server?.baseUrl,
-                )
+                // 激活门:未激活只显示激活页
+                var activated by remember { mutableStateOf(License.state(this).activated) }
+                LaunchedEffect(activated) {
+                    if (activated) {
+                        // 已激活:后台静默复查,只有服务端明确失效才退回
+                        License.verifyAsync(this@MainActivity) { stillOk ->
+                            if (!stillOk) activated = false
+                        }
+                    }
+                }
+                if (!activated) {
+                    ActivationScreen(onActivated = { activated = true })
+                } else {
+                    RootScreen(
+                        store = store,
+                        baseUrl = server?.baseUrl,
+                    )
+                }
             }
         }
     }
