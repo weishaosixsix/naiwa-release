@@ -18,6 +18,8 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.UnfoldLess
+import androidx.compose.material.icons.filled.UnfoldMore
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -40,7 +42,8 @@ fun AccountsScreen(store: AppStore, onOpenGame: () -> Unit, onOpenImport: () -> 
     var renameGroupTarget by remember { mutableStateOf<AccountGroup?>(null) }
     var moveTarget by remember { mutableStateOf<AccountItem?>(null) }
     var renameTarget by remember { mutableStateOf<AccountItem?>(null) }
-    val collapsed = remember { mutableStateMapOf<String, Boolean>() }
+    // 折叠状态存在 store 里(默认全部折叠),页面重组/重启都不会丢
+    val expandedGroups by store.expandedGroups
     var toast by remember { mutableStateOf<String?>(null) }
     // 批量启动:勾选的账号 id
     val selected = remember { mutableStateListOf<String>() }
@@ -101,6 +104,18 @@ fun AccountsScreen(store: AppStore, onOpenGame: () -> Unit, onOpenImport: () -> 
             title = { Text("账号管理", style = MaterialTheme.typography.titleMedium) },
             expandedHeight = 44.dp,
             actions = {
+                // 分组多时一键收起/展开,不用一个个点
+                if (store.groups.size > 1) {
+                    val allExpanded = store.groups.all { it.id in expandedGroups }
+                    IconButton(onClick = {
+                        store.setAllGroupsExpanded(store.groups.map { it.id }, !allExpanded)
+                    }) {
+                        Icon(
+                            if (allExpanded) Icons.Filled.UnfoldLess else Icons.Filled.UnfoldMore,
+                            if (allExpanded) "全部折叠" else "全部展开",
+                        )
+                    }
+                }
                 if (store.accounts.isNotEmpty()) {
                     IconButton(onClick = { folderPicker.launch(null) }) {
                         Icon(Icons.Filled.Save, "导出全部账号")
@@ -125,14 +140,14 @@ fun AccountsScreen(store: AppStore, onOpenGame: () -> Unit, onOpenImport: () -> 
             val sortedGroups = store.groups.sortedBy { it.order }
             sortedGroups.forEach { group ->
                 val list = store.accountsInGroup(group.id)
-                val isCollapsed = collapsed[group.id] == true
+                val isExpanded = group.id in expandedGroups
 
                 item(key = "h_${group.id}") {
                     GroupHeader(
                         group = group,
                         count = list.size,
-                        collapsed = isCollapsed,
-                        onToggle = { collapsed[group.id] = !isCollapsed },
+                        collapsed = !isExpanded,
+                        onToggle = { store.setGroupExpanded(group.id, !isExpanded) },
                         onLongClick = { renameGroupTarget = group },
                         onStartAll = {
                             if (list.isNotEmpty()) {
@@ -144,7 +159,7 @@ fun AccountsScreen(store: AppStore, onOpenGame: () -> Unit, onOpenImport: () -> 
                         },
                     )
                 }
-                if (!isCollapsed) {
+                if (isExpanded) {
                     items(list, key = { it.id }) { acc ->
                         AccountCard(
                             account = acc,

@@ -29,6 +29,7 @@ class AppStore(private val ctx: Context) {
         private const val K_TAB_MODE = "tab_mode"
         private const val K_DARK = "dark_theme"
         private const val K_SYNC = "sync_enabled"
+        private const val K_EXPANDED_GROUPS = "expanded_groups"
         /**
          * 一次最多能开几个窗口，同时是「上限」下拉菜单的选项范围。
          *
@@ -115,6 +116,29 @@ class AppStore(private val ctx: Context) {
         prefs.edit().putBoolean(K_TAB_MODE, on).apply()
     }
 
+    /**
+     * 已展开的分组 id。默认空 = 全部折叠。
+     *
+     * 分组多的时候，全都展开要点很多次才收得回去，所以默认折叠，
+     * 只记住用户手动展开的那些。放在这里而不是页面里，是因为账号页
+     * 会随标签切换被销毁重组，页面内的状态每次都会丢。
+     */
+    val expandedGroups = mutableStateOf<Set<String>>(emptySet())
+
+    fun isGroupExpanded(id: String): Boolean = id in expandedGroups.value
+
+    fun setGroupExpanded(id: String, expanded: Boolean) {
+        val cur = expandedGroups.value
+        expandedGroups.value =
+            if (expanded) cur + id else cur - id
+        prefs.edit().putStringSet(K_EXPANDED_GROUPS, expandedGroups.value).apply()
+    }
+
+    fun setAllGroupsExpanded(ids: Collection<String>, expanded: Boolean) {
+        expandedGroups.value = if (expanded) ids.toSet() else emptySet()
+        prefs.edit().putStringSet(K_EXPANDED_GROUPS, expandedGroups.value).apply()
+    }
+
     init {
         load()
         ensureDefaultGroup()
@@ -194,6 +218,9 @@ class AppStore(private val ctx: Context) {
             maxWindows.value = prefs.getInt(K_MAX_WIN, 2)
             tabMode.value = prefs.getBoolean(K_TAB_MODE, false)
             darkTheme.value = prefs.getBoolean(K_DARK, true)
+            // 默认全折叠:没存过就是空集合,老用户升级上来同样是折叠状态
+            expandedGroups.value = prefs.getStringSet(K_EXPANDED_GROUPS, null)
+                ?.toSet() ?: emptySet()
             // 标签模式下同步器无意义，恢复时直接按关闭处理
             syncEnabled.value = !tabMode.value && prefs.getBoolean(K_SYNC, false)
         }.onFailure { Log.w(TAG, "读取失败: ${it.message}") }
@@ -250,6 +277,8 @@ class AppStore(private val ctx: Context) {
         )
         accounts.add(item)
         save()
+        // 刚导入的账号落在默认分组:展开它,否则用户看不到导进来的东西
+        setGroupExpanded(item.groupId, true)
         return item
     }
 
@@ -313,6 +342,8 @@ class AppStore(private val ctx: Context) {
         )
         groups.add(g)
         save()
+        // 新建的分组默认展开,方便立刻往里挪账号
+        setGroupExpanded(g.id, true)
         return g
     }
 
@@ -333,6 +364,7 @@ class AppStore(private val ctx: Context) {
         }
         groups.removeAll { it.id == id }
         save()
+        if (id in expandedGroups.value) setGroupExpanded(id, false)
     }
 
     private inline fun updateGroup(id: String, block: (AccountGroup) -> AccountGroup) {
