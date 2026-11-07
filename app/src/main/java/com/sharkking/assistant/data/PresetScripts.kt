@@ -18,6 +18,7 @@ object PresetScripts {
     private val DEFAULT_ENABLED = setOf(
         "洗炼加速.js",
         "洗炼跳过红色.js",
+        "进游戏静音.js",
     )
 
     /** 常驻脚本：关掉会导致游戏卡死，不允许禁用或删除 */
