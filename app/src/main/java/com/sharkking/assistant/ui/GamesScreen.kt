@@ -166,16 +166,20 @@ fun GamesScreen(store: AppStore, baseUrl: String?, menuVisible: Boolean = false,
                 }
             }
         }
-        Surface(
-            modifier = Modifier.align(Alignment.TopStart).padding(start = 8.dp, top = 6.dp),
-            shape = RoundedCornerShape(14.dp),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
-        ) {
-            Text(
-                "窗口 ${store.windows.size}/${store.maxWindows.value}",
-                style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-            )
+        // 窗口计数胶囊:仅分屏模式显示。标签模式下它压在账号标签条上,
+        // 导致点不了其他号 —— 标签条本身就列着每个窗口,计数是冗余的
+        if (!tabMode) {
+            Surface(
+                modifier = Modifier.align(Alignment.TopStart).padding(start = 8.dp, top = 6.dp),
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+            ) {
+                Text(
+                    "窗口 ${store.windows.size}/${store.maxWindows.value}",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+            }
         }
         if (store.windows.isEmpty() || menuVisible) {
         Row(
