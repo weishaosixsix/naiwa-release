@@ -108,8 +108,11 @@ class AppStore(private val ctx: Context) {
 
     fun setTabMode(on: Boolean) {
         tabMode.value = on
-        // 标签模式下同步器影响的是看不见的后台账号，切换时一律先关掉
-        if (on) setSyncEnabled(false)
+        // 注意：这里不再自动关闭同步器。原来切到标签模式会静默关掉同步，
+        // 切回来也不恢复 —— 用户下一次多开点击就会发现"同步坏了"，其实
+        // 是开关被模式切换偷走了。收发两端在每个窗口都有安装，标签模式
+        // 下后台窗口的 JS 照常运行，同步事件能正常处理；要不要同步交给
+        // 用户自己的开关决定。
         if (on && activeWindowId.value == null) {
             activeWindowId.value = windows.firstOrNull()?.id
         }
