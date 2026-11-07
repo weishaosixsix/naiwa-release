@@ -30,6 +30,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -72,10 +73,48 @@ fun RootScreen(store: AppStore, baseUrl: String?) {
 
     Box(Modifier.fillMaxSize()) {
 
-    Scaffold(
-        bottomBar = {
-            // 默认 NavigationBar 有 80dp 高，这里压到 52dp
-            NavigationBar(modifier = Modifier.height(52.dp)) {
+        // 游戏页开着窗口时隐藏底部导航（和 QVQ 一样把整屏还给游戏），
+        // 由游戏页底部的「菜单」胶囊临时呼出，4 秒后自动收起
+        var gameNavVisible by remember { mutableStateOf(false) }
+        val inGame = tab == Tab.Games.ordinal && store.windows.isNotEmpty()
+        LaunchedEffect(inGame, gameNavVisible) {
+            if (gameNavVisible) {
+                kotlinx.coroutines.delay(4000)
+                gameNavVisible = false
+            }
+        }
+        val contentBottom = if (inGame && !gameNavVisible) 0.dp else 52.dp
+
+        Box(Modifier.fillMaxSize().padding(bottom = contentBottom)) {
+            when (Tab.entries[tab]) {
+                Tab.Accounts -> AccountsScreen(
+                    store = store,
+                    onOpenGame = { tab = Tab.Games.ordinal },
+                    onOpenImport = { showImport = true },
+                )
+                Tab.Scripts -> ScriptsScreen(store)
+                Tab.Games -> Unit
+            }
+            // 游戏页始终留在组合树里。若跟随 when 分支进出，WebView 会被销毁，
+            // 游戏被迫重新加载。这里保持布局尺寸不变（避免 WebView 重排导致
+            // 画面错乱），只在非游戏标签时整层平移出屏幕。
+            val onGames = tab == Tab.Games.ordinal
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        // 只平移，不设 alpha。alpha<1 会强制分配整屏离屏缓冲，
+                        // 叠上多个全屏 WebView 硬件层后会把 GPU 拖崩。
+                        if (!onGames) translationX = 1e5f
+                    }
+            ) {
+                GamesScreen(store, baseUrl, onOpenNav = { gameNavVisible = true })
+            }
+        }
+
+        // 底部导航（悬浮层）
+        if (!inGame || gameNavVisible) {
+            NavigationBar(modifier = Modifier.align(Alignment.BottomCenter).height(52.dp)) {
                 Tab.entries.forEachIndexed { i, t ->
                     NavigationBarItem(
                         selected = tab == i,
@@ -100,33 +139,6 @@ fun RootScreen(store: AppStore, baseUrl: String?) {
                 }
             }
         }
-    ) { pad ->
-        Box(Modifier.fillMaxSize().padding(pad)) {
-            when (Tab.entries[tab]) {
-                Tab.Accounts -> AccountsScreen(
-                    store = store,
-                    onOpenGame = { tab = Tab.Games.ordinal },
-                    onOpenImport = { showImport = true },
-                )
-                Tab.Scripts -> ScriptsScreen(store)
-                Tab.Games -> Unit
-            }
-            // 游戏页始终留在组合树里。若跟随 when 分支进出，WebView 会被销毁，
-            // 游戏被迫重新加载。这里保持布局尺寸不变（避免 WebView 重排导致
-            // 画面错乱），只在非游戏标签时整层平移出屏幕。
-            val onGames = tab == Tab.Games.ordinal
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        // 只平移，不设 alpha。alpha<1 会强制分配整屏离屏缓冲，
-                        // 叠上多个全屏 WebView 硬件层后会把 GPU 拖崩。
-                        if (!onGames) translationX = 1e5f
-                    }
-            ) {
-                GamesScreen(store, baseUrl)
-            }
-        }
     }
 
     // 导入页盖满全屏（含底栏），退出后回到账号页
@@ -134,8 +146,6 @@ fun RootScreen(store: AppStore, baseUrl: String?) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             ImportScreen(store = store, onClose = { showImport = false })
         }
-    }
-
     }
 }
 

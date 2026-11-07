@@ -29,7 +29,7 @@ import com.sharkking.assistant.data.GameWindow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun GamesScreen(store: AppStore, baseUrl: String?) {
+fun GamesScreen(store: AppStore, baseUrl: String?, onOpenNav: () -> Unit = {}) {
     // 每个窗口对应一个 WebView 实例，跨重组保持
     val holders = remember { mutableMapOf<String, GameWebViewHolder>() }
     // 各窗口的脚本状态，标签栏与标题条共用
@@ -79,106 +79,35 @@ fun GamesScreen(store: AppStore, baseUrl: String?) {
     val tip = rememberTipState()
 
     Box(Modifier.fillMaxSize()) {
-    Column(Modifier.fillMaxSize()) {
-        // 顶栏压到 38dp，给游戏画面让出高度
-        TopAppBar(
-            title = {
-                Text(
-                    "窗口 ${store.windows.size}/${store.maxWindows.value}",
-                    style = MaterialTheme.typography.labelLarge,
-                )
-            },
-            expandedHeight = 38.dp,
-            actions = {
-                // 显示模式：标签 / 一屏多窗口
-                IconButton(onClick = {
-                    val to = !tabMode
-                    // setTabMode 切到标签模式时会顺带关掉同步器，
-                    // 得在调用前记下原值，否则用户会以为同步自己关了
-                    val syncWasOn = store.syncEnabled.value
-                    store.setTabMode(to)
-                    val name = if (to) "标签模式" else "分屏模式"
-                    tip.show(
-                        if (to && syncWasOn) "已切换到$name，同步器已关闭"
-                        else "已切换到$name"
-                    )
-                }) {
-                    Icon(
-                        if (tabMode) Icons.Filled.ViewCarousel else Icons.Filled.GridView,
-                        if (tabMode) "标签模式" else "分屏模式",
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                }
-                // 同步器总开关
-                IconButton(onClick = {
-                    val on = !store.syncEnabled.value
-                    store.setSyncEnabled(on)
-                    tip.show(if (on) "已开启同步器" else "已关闭同步器")
-                }) {
-                    Icon(
-                        Icons.Filled.Sync,
-                        "同步器",
-                        tint = if (store.syncEnabled.value)
-                            MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                // 窗口上限
-                var expanded by remember { mutableStateOf(false) }
-                TextButton(onClick = { expanded = true }) {
-                    Text("上限 ${store.maxWindows.value}")
-                }
-                DropdownMenu(expanded, onDismissRequest = { expanded = false }) {
-                    (1..AppStore.WINDOW_LIMIT).forEach { n ->
-                        DropdownMenuItem(
-                            text = { Text("$n 个窗口") },
-                            onClick = {
-                                store.maxWindows.value = n
-                                store.save()
-                                expanded = false
-                            },
-                        )
-                    }
-                }
-            }
-        )
-
+        // 游戏层占满全屏（工具栏/标题条悬浮，不占布局高度）——
+        // 游戏视口越高，咸将列表这类长列表能显示的内容越多
         if (baseUrl == null) {
             EmptyHint("HTTP服务器未就绪")
-            return@Column
-        }
-        if (store.windows.isEmpty()) {
+        } else if (store.windows.isEmpty()) {
             EmptyHint("暂无游戏窗口，去账号页点击账号卡片打开游戏")
-            return@Column
-        }
-
-        if (tabMode) {
-            // 自绘标签栏而非 ScrollableTabRow：后者按下标取内部 tabPositions，
-            // 而 composition 与 subcompose 测量阶段读到的窗口数可能不一致，
-            // 新开窗口的那一帧就会 IndexOutOfBounds。这里不做任何索引操作。
-            TabStrip(store = store, currentId = current?.id, statusOf = statusOf)
-        }
-
-        // 所有窗口都留在组合树里、都是全屏尺寸并互相重叠。
-        // 隐藏靠 WebView 自身的 visibility（见 setBackgrounded）：
-        // 布局尺寸不变所以不会重排，同时后台窗口不参与绘制。
-        if (tabMode) {
+        } else if (tabMode) {
             // 标签模式：所有窗口都是全屏尺寸、互相重叠，靠 WebView 自身的
             // visibility 切换（见 setBackgrounded），布局尺寸不变所以不会重排。
             // 全部子项都在同一个 Box 下、只按 id 增删，本身就是稳定的。
-            Box(Modifier.fillMaxSize()) {
-                store.windows.forEach { w ->
-                    key(w.id) {
-                        WindowPane(
-                            store = store,
-                            window = w,
-                            baseUrl = baseUrl ?: "",
-                            holders = holders,
-                            compact = false,
-                            onStatus = { statusOf[w.id] = it },
-                            // 标题条只跟当前标签走，避免多份标题条叠在一起
-                            showBar = w.id == current?.id,
-                        )
+            Column(Modifier.fillMaxSize()) {
+                // 自绘标签栏而非 ScrollableTabRow：后者按下标取内部 tabPositions，
+                // 而 composition 与 subcompose 测量阶段读到的窗口数可能不一致，
+                // 新开窗口的那一帧就会 IndexOutOfBounds。这里不做任何索引操作。
+                TabStrip(store = store, currentId = current?.id, statusOf = statusOf)
+                Box(Modifier.fillMaxSize()) {
+                    store.windows.forEach { w ->
+                        key(w.id) {
+                            WindowPane(
+                                store = store,
+                                window = w,
+                                baseUrl = baseUrl ?: "",
+                                holders = holders,
+                                compact = false,
+                                onStatus = { statusOf[w.id] = it },
+                                // 标题条只跟当前标签走，避免多份标题条叠在一起
+                                showBar = w.id == current?.id,
+                            )
+                        }
                     }
                 }
             }
@@ -218,10 +147,103 @@ fun GamesScreen(store: AppStore, baseUrl: String?) {
                 }
             }
         }
-    }
 
-    // 浮在顶栏下方，盖在游戏画面之上
-    TipHost(tip, Modifier.padding(top = 42.dp))
+        // ---- 悬浮工具栏（半透明胶囊，不占布局高度）----
+        // 底部导航隐藏时，给一个呼出入口（临时呼出，4 秒后自动收起）
+        Surface(
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f),
+        ) {
+            TextButton(onClick = onOpenNav) {
+                Text("▲ 菜单", style = MaterialTheme.typography.labelMedium)
+            }
+        }
+        Surface(
+            modifier = Modifier.align(Alignment.TopStart).padding(start = 8.dp, top = 6.dp),
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+        ) {
+            Text(
+                "窗口 ${store.windows.size}/${store.maxWindows.value}",
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+        }
+        Row(
+            Modifier.align(Alignment.TopEnd).padding(end = 6.dp, top = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 显示模式：标签 / 一屏多窗口
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+            ) {
+                IconButton(onClick = {
+                    val to = !tabMode
+                    // setTabMode 切到标签模式时会顺带关掉同步器，
+                    // 得在调用前记下原值，否则用户会以为同步自己关了
+                    val syncWasOn = store.syncEnabled.value
+                    store.setTabMode(to)
+                    val name = if (to) "标签模式" else "分屏模式"
+                    tip.show(
+                        if (to && syncWasOn) "已切换到$name，同步器已关闭"
+                        else "已切换到$name"
+                    )
+                }) {
+                    Icon(
+                        if (tabMode) Icons.Filled.ViewCarousel else Icons.Filled.GridView,
+                        if (tabMode) "标签模式" else "分屏模式",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+            // 同步器总开关
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+            ) {
+                IconButton(onClick = {
+                    val on = !store.syncEnabled.value
+                    store.setSyncEnabled(on)
+                    tip.show(if (on) "已开启同步器" else "已关闭同步器")
+                }) {
+                    Icon(
+                        Icons.Filled.Sync,
+                        "同步器",
+                        tint = if (store.syncEnabled.value)
+                            MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            // 窗口上限
+            var expanded by remember { mutableStateOf(false) }
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+            ) {
+                TextButton(onClick = { expanded = true }) {
+                    Text("上限 ${store.maxWindows.value}")
+                }
+                DropdownMenu(expanded, onDismissRequest = { expanded = false }) {
+                    (1..AppStore.WINDOW_LIMIT).forEach { n ->
+                        DropdownMenuItem(
+                            text = { Text("$n 个窗口") },
+                            onClick = {
+                                store.maxWindows.value = n
+                                store.save()
+                                expanded = false
+                            },
+                        )
+                    }
+                }
+            }
+        }
+
+        // 浮在工具栏下方，盖在游戏画面之上
+        TipHost(tip, Modifier.padding(top = 42.dp))
     }
 }
 
@@ -326,61 +348,9 @@ private fun WindowPane(
     val iconSize = if (compact) 15.dp else 19.dp
     var scriptStatus by remember { mutableStateOf("") }
 
-    Column(Modifier.fillMaxSize()) {
-        // 标签模式下各窗口互相重叠，非当前项的标题条要让位，
-        // 但必须留出等高占位，否则 WebView 高度变化会引发重排。
-        if (!showBar) {
-            Spacer(Modifier.fillMaxWidth().height(barHeight))
-        } else
-        // 窗口标题条：标题隐藏 .bin 后缀。多窗口时压扁，给画面让出高度
-        Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
-            Row(
-                Modifier.fillMaxWidth().height(barHeight)
-                    .padding(start = 8.dp, end = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    buildString {
-                        append(window.title)
-                        if (scriptStatus.isNotEmpty()) append(" · $scriptStatus")
-                    },
-                    style = if (compact) MaterialTheme.typography.labelSmall
-                    else MaterialTheme.typography.labelLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                // 补注入尚未生效的脚本；已注入过的不会重复执行
-                IconButton(
-                    onClick = { holders[window.id]?.injectUserScripts() },
-                    modifier = Modifier.size(barHeight),
-                ) {
-                    Icon(
-                        Icons.Filled.PlayArrow, "补注入脚本",
-                        modifier = Modifier.size(iconSize),
-                    )
-                }
-                IconButton(
-                    onClick = { holders[window.id]?.reload() },
-                    modifier = Modifier.size(barHeight),
-                ) {
-                    Icon(
-                        Icons.Filled.Refresh, "重新加载页面",
-                        modifier = Modifier.size(iconSize),
-                    )
-                }
-                IconButton(
-                    onClick = { store.closeWindow(window.id) },
-                    modifier = Modifier.size(barHeight),
-                ) {
-                    Icon(
-                        Icons.Filled.Close, "关闭",
-                        modifier = Modifier.size(iconSize),
-                    )
-                }
-            }
-        }
-
+    Box(Modifier.fillMaxSize()) {
+        // WebView 占满整个窗口（标题条悬浮，不占布局高度）——
+        // 以前标题条实体占一行，游戏视口被压矮，长列表（咸将页）显示的条目变少
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
@@ -406,5 +376,76 @@ private fun WindowPane(
                 holder.webView
             },
         )
+
+        // ---- 悬浮标题条 ----
+        if (showBar) {
+            // 账号名 + 注入状态（半透明胶囊，左上）
+            Surface(
+                modifier = Modifier.align(Alignment.TopStart).padding(start = 6.dp, top = 4.dp),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f),
+            ) {
+                Text(
+                    buildString {
+                        append(window.title)
+                        if (scriptStatus.isNotEmpty()) append("·$scriptStatus")
+                    },
+                    style = if (compact) MaterialTheme.typography.labelSmall
+                    else MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                )
+            }
+            // 控制按钮（右上，半透明圆钮）
+            Row(
+                Modifier.align(Alignment.TopEnd).padding(end = 4.dp, top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                // 补注入尚未生效的脚本；已注入过的不会重复执行
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f),
+                ) {
+                    IconButton(
+                        onClick = { holders[window.id]?.injectUserScripts() },
+                        modifier = Modifier.size(barHeight),
+                    ) {
+                        Icon(
+                            Icons.Filled.PlayArrow, "补注入脚本",
+                            modifier = Modifier.size(iconSize),
+                        )
+                    }
+                }
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f),
+                ) {
+                    IconButton(
+                        onClick = { holders[window.id]?.reload() },
+                        modifier = Modifier.size(barHeight),
+                    ) {
+                        Icon(
+                            Icons.Filled.Refresh, "重新加载页面",
+                            modifier = Modifier.size(iconSize),
+                        )
+                    }
+                }
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f),
+                ) {
+                    IconButton(
+                        onClick = { store.closeWindow(window.id) },
+                        modifier = Modifier.size(barHeight),
+                    ) {
+                        Icon(
+                            Icons.Filled.Close, "关闭",
+                            modifier = Modifier.size(iconSize),
+                        )
+                    }
+                }
+            }
+        }
     }
 }
