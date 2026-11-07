@@ -29,7 +29,7 @@ import com.sharkking.assistant.data.GameWindow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun GamesScreen(store: AppStore, baseUrl: String?, onOpenNav: () -> Unit = {}) {
+fun GamesScreen(store: AppStore, baseUrl: String?, menuVisible: Boolean = false, onToggleMenu: () -> Unit = {}) {
     // 每个窗口对应一个 WebView 实例，跨重组保持
     val holders = remember { mutableMapOf<String, GameWebViewHolder>() }
     // 各窗口的脚本状态，标签栏与标题条共用
@@ -149,14 +149,21 @@ fun GamesScreen(store: AppStore, baseUrl: String?, onOpenNav: () -> Unit = {}) {
         }
 
         // ---- 悬浮工具栏（半透明胶囊，不占布局高度）----
-        // 底部导航隐藏时，给一个呼出入口（临时呼出，4 秒后自动收起）
-        Surface(
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f),
-        ) {
-            TextButton(onClick = onOpenNav) {
-                Text("▲ 菜单", style = MaterialTheme.typography.labelMedium)
+        // 游戏页开着窗口时:导航与右上工具按钮一并隐藏,由「菜单」胶囊开关
+        // ——点开显示,再点立即收起
+        if (store.windows.isNotEmpty()) {
+            Surface(
+                modifier = Modifier.align(Alignment.BottomCenter)
+                    .padding(bottom = if (menuVisible) 60.dp else 8.dp),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f),
+            ) {
+                TextButton(onClick = onToggleMenu) {
+                    Text(
+                        if (menuVisible) "▼ 菜单" else "▲ 菜单",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
             }
         }
         Surface(
@@ -170,6 +177,7 @@ fun GamesScreen(store: AppStore, baseUrl: String?, onOpenNav: () -> Unit = {}) {
                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
             )
         }
+        if (store.windows.isEmpty() || menuVisible) {
         Row(
             Modifier.align(Alignment.TopEnd).padding(end = 6.dp, top = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -240,6 +248,7 @@ fun GamesScreen(store: AppStore, baseUrl: String?, onOpenNav: () -> Unit = {}) {
                     }
                 }
             }
+        }
         }
 
         // 浮在工具栏下方，盖在游戏画面之上

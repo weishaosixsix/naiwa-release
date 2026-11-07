@@ -73,17 +73,11 @@ fun RootScreen(store: AppStore, baseUrl: String?) {
 
     Box(Modifier.fillMaxSize()) {
 
-        // 游戏页开着窗口时隐藏底部导航（和 QVQ 一样把整屏还给游戏），
-        // 由游戏页底部的「菜单」胶囊临时呼出，4 秒后自动收起
-        var gameNavVisible by remember { mutableStateOf(false) }
+        // 游戏页开着窗口时隐藏底部导航与工具按钮（和 QVQ 一样把整屏还给游戏），
+        // 由游戏页底部的「菜单」胶囊开关：点开显示、再点立即收起
+        var gameMenuVisible by remember { mutableStateOf(false) }
         val inGame = tab == Tab.Games.ordinal && store.windows.isNotEmpty()
-        LaunchedEffect(inGame, gameNavVisible) {
-            if (gameNavVisible) {
-                kotlinx.coroutines.delay(4000)
-                gameNavVisible = false
-            }
-        }
-        val contentBottom = if (inGame && !gameNavVisible) 0.dp else 52.dp
+        val contentBottom = if (inGame && !gameMenuVisible) 0.dp else 52.dp
 
         Box(Modifier.fillMaxSize().padding(bottom = contentBottom)) {
             when (Tab.entries[tab]) {
@@ -108,12 +102,17 @@ fun RootScreen(store: AppStore, baseUrl: String?) {
                         if (!onGames) translationX = 1e5f
                     }
             ) {
-                GamesScreen(store, baseUrl, onOpenNav = { gameNavVisible = true })
+                GamesScreen(
+                    store = store,
+                    baseUrl = baseUrl,
+                    menuVisible = gameMenuVisible,
+                    onToggleMenu = { gameMenuVisible = !gameMenuVisible },
+                )
             }
         }
 
         // 底部导航（悬浮层）
-        if (!inGame || gameNavVisible) {
+        if (!inGame || gameMenuVisible) {
             NavigationBar(modifier = Modifier.align(Alignment.BottomCenter).height(52.dp)) {
                 Tab.entries.forEachIndexed { i, t ->
                     NavigationBarItem(
